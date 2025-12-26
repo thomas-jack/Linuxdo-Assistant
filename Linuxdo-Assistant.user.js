@@ -36,7 +36,8 @@
             LEADERBOARD_DAILY: 'https://linux.do/leaderboard/1.json?period=daily',
             LINK_LEADERBOARD: 'https://linux.do/leaderboard/1',
             CDK_INFO: 'https://cdk.linux.do/api/v1/oauth/user-info',
-            LINK_CDK: 'https://cdk.linux.do/dashboard'
+            LINK_CDK: 'https://cdk.linux.do/dashboard',
+            LINK_LOGIN: 'https://linux.do/login'
         },
         // 保持 v4 键名以维持配置
         KEYS: {
@@ -61,6 +62,9 @@
             tab_setting: "偏好设置",
             loading: "数据加载中...",
             connect_err: "连接失败或未登录",
+            trust_not_login: "尚未登录社区",
+            trust_login_tip: "登录后可查看信任级别与进度",
+            trust_go_login: "前往登录",
             level: "当前级别",
             status_ok: "已达标",
             status_fail: "未达标",
@@ -113,6 +117,9 @@
             tab_setting: "Settings",
             loading: "Loading...",
             connect_err: "Connection Error / Not Logged In",
+            trust_not_login: "Not logged in",
+            trust_login_tip: "Login to view trust level and progress",
+            trust_go_login: "Go to Login",
             level: "Level",
             status_ok: "Qualified",
             status_fail: "Unqualified",
@@ -265,7 +272,7 @@
             --lda-accent: #38bdf8;
         }
 
-        #lda-root { position: fixed; z-index: var(--lda-z); font-family: var(--lda-font); font-size: 14px; user-select: none; color: var(--lda-fg); }
+        #lda-root { position: fixed; z-index: var(--lda-z); font-family: var(--lda-font); font-size: 14px; user-select: none; color: var(--lda-fg); min-width: 44px; min-height: 44px; }
         
         /* 悬浮球 */
         .lda-ball {
@@ -280,11 +287,14 @@
 
         /* 面板 */
         .lda-panel {
+            position: absolute; top: 58px; right: 0;
             width: 340px; background: var(--lda-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
             border: var(--lda-border); border-radius: var(--lda-rad); box-shadow: var(--lda-shadow);
-            display: none; flex-direction: column; overflow: hidden; margin-top: 14px;
+            display: none; flex-direction: column; overflow: hidden; margin-top: 0;
             transform-origin: top right; animation: lda-in 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
         }
+        #lda-root.lda-side-right .lda-panel { left: 0; right: auto; transform-origin: top left; }
+        #lda-root.lda-side-left .lda-panel { right: 0; left: auto; transform-origin: top right; }
         @keyframes lda-in { from { opacity: 0; transform: scale(0.92) translateY(-10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
 
         /* 头部 */
@@ -478,6 +488,7 @@
             this.applyTheme();
             this.applyHeight();
             this.restorePos();
+            this.updatePanelSide();
             
             if (this.state.expand) {
                 this.togglePanel(true);
@@ -489,6 +500,7 @@
         renderLayout() {
             const root = document.createElement('div');
             root.id = 'lda-root';
+            root.className = 'lda-side-left';
             // 定义所有标签的映射
             const tabMap = {
                 trust: { key: 'trust', label: this.t('tab_trust') },
@@ -749,15 +761,20 @@
             // 窗口获得焦点时自动刷新 Credit 和 CDK（用户授权后回来）
             window.addEventListener('focus', () => {
                 if (this.dom.panel.style.display === 'flex') {
+                    this.refreshTrust();
                     this.refreshCredit();
                     this.refreshCDK();
                 }
             });
 
+            window.addEventListener('resize', () => {
+                this.updatePanelSide();
+            });
+
             this.initDrag();
         }
 
-        async refreshTrust() {
+        async refreshTrust(autoRetry = true) {
             const wrap = this.dom.trust;
             // 查找刷新按钮是否已存在，用于显示 Loading
             const existingBtn = Utils.el('#btn-re-trust', wrap);
@@ -772,8 +789,13 @@
                 ]);
                 
                 const doc = new DOMParser().parseFromString(html, 'text/html');
+                const bodyText = doc.body?.textContent || '';
+                const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
                 const levelNode = Array.from(doc.querySelectorAll('h2')).find(x => x.textContent.includes('信任级别'));
-                if (!levelNode) throw new Error("Need Login");
+                if (!levelNode) {
+                    if (loginHint || /登录|login|sign in/i.test(bodyText)) throw new Error("NeedLogin");
+                    throw new Error("ParseError");
+                }
 
                 const level = levelNode.textContent.replace(/\D/g, '');
                 const isPass = levelNode.parentElement.querySelector('.text-green-500') !== null;
@@ -862,8 +884,34 @@
                 Utils.el('#btn-re-trust', wrap).onclick = () => this.refreshTrust();
 
             } catch (e) {
+                const isLogin = e?.message === 'NeedLogin' || e?.status === 401;
+
+                // 自动重试一次，再显示 Retry
+                if (autoRetry && !isLogin) {
+                    setTimeout(() => this.refreshTrust(false), 200);
+                    return;
+                }
+
+                if (isLogin) {
+                    wrap.innerHTML = `
+                        <div class="lda-card lda-auth-card">
+                            <div class="lda-auth-icon">
+                                <svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5L12 1m0 4a3 3 0 0 1 3 3 3 3 0 0 1-3 3 3 3 0 0 1-3-3 3 3 0 0 1 3-3m5.13 12c-1.21 1.85-3.02 3.24-5.13 3.92-2.11-.68-3.92-2.07-5.13-3.92-.34-.5-.63-1-.87-1.53 0-1.65 2.71-3 6-3s6 1.32 6 3c-.24.53-.53 1.03-.87 1.53Z"/></svg>
+                            </div>
+                            <div class="lda-auth-title">${this.t('trust_not_login')}</div>
+                            <div class="lda-auth-tip">${this.t('trust_login_tip')}</div>
+                            <div class="lda-auth-btns">
+                                <a href="${CONFIG.API.LINK_LOGIN}" target="_blank" class="lda-auth-btn">${this.t('trust_go_login')} →</a>
+                                <button id="btn-trust-refresh" class="lda-auth-btn secondary">${this.t('credit_refresh')}</button>
+                            </div>
+                        </div>
+                    `;
+                    Utils.el('#btn-trust-refresh', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshTrust(); };
+                    return;
+                }
+
                 wrap.innerHTML = `<div class="lda-card" style="text-align:center;color:var(--lda-red)">${this.t('connect_err')}<br><button id="retry-trust" style="margin-top:8px;padding:4px 12px;">Retry</button></div>`;
-                Utils.el('#retry-trust', wrap).onclick = (e) => { e.stopPropagation(); this.refreshTrust(); };
+                Utils.el('#retry-trust', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshTrust(); };
             }
         }
 
@@ -1100,6 +1148,29 @@
                 this.refreshCDK();
                 this.dom.panel.dataset.loaded = '1';
             }
+            if (show) this.updatePanelSide();
+        }
+
+        updatePanelSide() {
+            const rect = this.dom.root.getBoundingClientRect();
+            const rootWidth = rect.width || 44;
+            const panelWidth = this.dom.panel.getBoundingClientRect().width || 340;
+            const spaceLeft = rect.left;
+            const spaceRight = window.innerWidth - rect.right;
+
+            let side = 'left';
+            if (spaceRight >= panelWidth + 12) side = 'right';
+            else if (spaceLeft >= panelWidth + 12) side = 'left';
+            else side = spaceRight >= spaceLeft ? 'right' : 'left';
+
+            this.dom.root.classList.toggle('lda-side-right', side === 'right');
+            this.dom.root.classList.toggle('lda-side-left', side === 'left');
+
+            // 防止拖拽或窗口缩放后位置超出视口
+            const clampedLeft = Math.min(Math.max(rect.left, 0), Math.max(0, window.innerWidth - rootWidth));
+            const clampedTop = Math.min(Math.max(rect.top, 0), Math.max(0, window.innerHeight - 50));
+            this.dom.root.style.right = Math.max(0, window.innerWidth - clampedLeft - rootWidth) + 'px';
+            this.dom.root.style.top = clampedTop + 'px';
         }
 
         applyTheme() {
@@ -1145,6 +1216,7 @@
                     document.removeEventListener('mouseup', onUp);
                     const r = this.dom.root.getBoundingClientRect();
                     Utils.set(CONFIG.KEYS.POS, { r: window.innerWidth - r.right, t: r.top });
+                    this.updatePanelSide();
                 }
             };
             
