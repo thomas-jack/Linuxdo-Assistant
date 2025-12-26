@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      1.5.0
+// @version      1.5.1
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -863,7 +863,7 @@
 
             } catch (e) {
                 wrap.innerHTML = `<div class="lda-card" style="text-align:center;color:var(--lda-red)">${this.t('connect_err')}<br><button id="retry-trust" style="margin-top:8px;padding:4px 12px;">Retry</button></div>`;
-                Utils.el('#retry-trust', wrap).onclick = () => this.refreshTrust();
+                Utils.el('#retry-trust', wrap).onclick = (e) => { e.stopPropagation(); this.refreshTrust(); };
             }
         }
 
@@ -927,7 +927,7 @@
                         </div>
                     </div>
                 `;
-                Utils.el('#btn-credit-refresh', wrap).onclick = () => this.refreshCredit();
+                Utils.el('#btn-credit-refresh', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCredit(); };
             }
         }
 
@@ -1088,7 +1088,7 @@
                     </div>
                 </div>
             `;
-            Utils.el('#btn-cdk-refresh', wrap).onclick = () => this.refreshCDK();
+            Utils.el('#btn-cdk-refresh', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCDK(); };
         }
 
         togglePanel(show) {
