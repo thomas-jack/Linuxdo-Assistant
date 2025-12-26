@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      1.7.0
+// @version      1.8.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -47,10 +47,14 @@
             HEIGHT: 'lda_v4_height',
             LANG: 'lda_v4_lang',
             CACHE_TRUST: 'lda_v4_cache_trust',
+            CACHE_TRUST_DATA: 'lda_v5_cache_trust_data',
+            CACHE_CREDIT_DATA: 'lda_v5_cache_credit_data',
             TAB_ORDER: 'lda_v5_tab_order',
             CACHE_CDK: 'lda_v5_cache_cdk',
             REFRESH_INTERVAL: 'lda_v5_refresh_interval',
-            OPACITY: 'lda_v5_opacity'
+            OPACITY: 'lda_v5_opacity',
+            CACHE_META: 'lda_v5_cache_meta',
+            USER_SIG: 'lda_v5_user_sig'
         }
     };
     const AUTO_REFRESH_MS = 30 * 60 * 1000; // 半小时定时刷新
@@ -120,7 +124,11 @@
             cdk_score_desc: "基于徽章计算的社区信誉分",
             support_title: "支持作者",
             support_desc: "您的支持是持续开发的动力",
-            support_thanks: "感谢您的支持 ❤️"
+            support_thanks: "感谢您的支持 ❤️",
+            slow_tip: "请求有点慢，稍等我处理一下…",
+            clear_cache: "清除缓存",
+            clear_cache_tip: "清除跨标签页缓存与账号关联数据",
+            clear_cache_done: "缓存已清空"
         },
         en: {
             title: "Linux.do HUD",
@@ -185,14 +193,18 @@
             cdk_score_desc: "Community reputation based on badges",
             support_title: "Support",
             support_desc: "Your support keeps development going",
-            support_thanks: "Thank you for your support ❤️"
+            support_thanks: "Thank you for your support ❤️",
+            slow_tip: "It's a bit slow, please hold on…",
+            clear_cache: "Clear cache",
+            clear_cache_tip: "Remove cross-tab cache and user binding",
+            clear_cache_done: "Cache cleared"
         }
     };
 
     // 工具函数
     class Utils {
         static async request(url, options = {}) {
-            const { withCredentials, retries = 3, timeout = 10000, ...validOptions } = options;
+            const { withCredentials, retries = 3, timeout = 8000, ...validOptions } = options;
             const attempts = Math.max(1, retries);
             let lastErr;
             for (let i = 0; i < attempts; i++) {
@@ -212,6 +224,7 @@
                     });
                     return res;
                 } catch (e) {
+                    if (e?.status === 401 || e?.status === 403) throw e;
                     lastErr = e;
                     if (i === attempts - 1) throw lastErr;
                 }
@@ -620,6 +633,17 @@
             font-size: 12px; font-weight: 700; color: var(--card-accent, var(--lda-accent));
         }
         .lda-support-unit { font-size: 9px; color: var(--lda-dim); margin-top: 1px; }
+        /* 慢速提示 */
+        .lda-slow-tip {
+            display: none;
+            margin-top: 12px;
+            padding: 10px 12px;
+            background: rgba(59,130,246,0.08);
+            border: 1px dashed rgba(59,130,246,0.4);
+            color: var(--lda-dim);
+            font-size: 12px;
+            border-radius: 8px;
+        }
     `;
 
     // 主程序
@@ -636,12 +660,22 @@
                 opacity: Utils.get(CONFIG.KEYS.OPACITY, 1)
             };
             this.cdkCache = Utils.get(CONFIG.KEYS.CACHE_CDK, null);
+            this.trustData = Utils.get(CONFIG.KEYS.CACHE_TRUST_DATA, null);
+            this.creditData = Utils.get(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
+            this.lastFetch = Utils.get(CONFIG.KEYS.CACHE_META, { trust: 0, credit: 0, cdk: 0 });
+            this.userSig = Utils.get(CONFIG.KEYS.USER_SIG, null);
             this.focusFlags = { trust: false, credit: false, cdk: false };
             this.autoRefreshTimer = null;
             this.cdkBridgeInit = false;
             this.cdkBridgeFrame = null;
             this.cdkWaiters = [];
             this.onCDKMessage = this.onCDKMessage.bind(this);
+            this.activePage = 'trust';
+            this.pendingStatus = {
+                trust: { count: 0, since: null, timer: null, slowShown: false },
+                credit: { count: 0, since: null, timer: null, slowShown: false },
+                cdk: { count: 0, since: null, timer: null, slowShown: false }
+            };
             this.dom = {};
         }
 
@@ -658,6 +692,8 @@
             this.applyOpacity();
             this.restorePos();
             this.updatePanelSide();
+            this.renderFromCacheAll();
+            this.prewarmAll(true);
             this.startAutoRefreshTimer();
             
             if (this.state.expand || forceOpen) {
@@ -699,10 +735,21 @@
                         <div class="lda-tab" data-target="setting">${this.t('tab_setting')}</div>
                     </div>
                     <div class="lda-body">
-                        <div id="page-${orderedTabs[0].key}" class="lda-page active"></div>
-                        <div id="page-${orderedTabs[1].key}" class="lda-page"></div>
-                        <div id="page-${orderedTabs[2].key}" class="lda-page"></div>
-                        <div id="page-setting" class="lda-page"></div>
+                        <div id="page-${orderedTabs[0].key}" class="lda-page active">
+                            <div id="content-${orderedTabs[0].key}"></div>
+                            <div class="lda-slow-tip" data-page="${orderedTabs[0].key}"></div>
+                        </div>
+                        <div id="page-${orderedTabs[1].key}" class="lda-page">
+                            <div id="content-${orderedTabs[1].key}"></div>
+                            <div class="lda-slow-tip" data-page="${orderedTabs[1].key}"></div>
+                        </div>
+                        <div id="page-${orderedTabs[2].key}" class="lda-page">
+                            <div id="content-${orderedTabs[2].key}"></div>
+                            <div class="lda-slow-tip" data-page="${orderedTabs[2].key}"></div>
+                        </div>
+                        <div id="page-setting" class="lda-page">
+                            <div id="content-setting"></div>
+                        </div>
                     </div>
                 </div>
             `;
@@ -712,10 +759,15 @@
                 root,
                 ball: Utils.el('.lda-ball', root),
                 panel: Utils.el('.lda-panel', root),
-                trust: Utils.el('#page-trust', root),
-                credit: Utils.el('#page-credit', root),
-                cdk: Utils.el('#page-cdk', root),
-                setting: Utils.el('#page-setting', root),
+                trustPage: Utils.el('#page-trust', root),
+                creditPage: Utils.el('#page-credit', root),
+                cdkPage: Utils.el('#page-cdk', root),
+                settingPage: Utils.el('#page-setting', root),
+                trust: Utils.el('#content-trust', root),
+                credit: Utils.el('#content-credit', root),
+                cdk: Utils.el('#content-cdk', root),
+                setting: Utils.el('#content-setting', root),
+                slowTips: Utils.els('.lda-slow-tip', root),
                 themeBtn: Utils.el('#lda-btn-theme', root),
                 tabs: Utils.els('.lda-tab', root),
                 head: Utils.el('.lda-head', root)
@@ -812,6 +864,13 @@
                             ${sortItemsHtml}
                         </div>
                         <button class="lda-sort-btn" id="btn-save-order">${this.t('tab_order_save')}</button>
+                    </div>
+                </div>
+                <div class="lda-card">
+                    <div class="lda-opt" style="flex-direction:column; align-items:flex-start; margin:0; padding:0; border:none;">
+                        <div class="lda-opt-label">${this.t('clear_cache')}</div>
+                        <div class="lda-opt-sub" style="margin:6px 0 10px 0;">${this.t('clear_cache_tip')}</div>
+                        <button class="lda-sort-btn" id="btn-clear-cache">${this.t('clear_cache')}</button>
                     </div>
                 </div>
                 <div class="lda-support">
@@ -941,6 +1000,8 @@
                 Utils.els('.lda-page', this.dom.root).forEach(x => x.classList.remove('active'));
                 t.classList.add('active');
                 Utils.el(`#page-${t.dataset.target}`, this.dom.root).classList.add('active');
+                this.activePage = t.dataset.target;
+                this.refreshSlowTipForPage(this.activePage);
             });
 
             this.dom.setting.onclick = (e) => {
@@ -971,6 +1032,10 @@
                 if(e.target.id === 'inp-expand') {
                     this.state.expand = e.target.checked;
                     Utils.set(CONFIG.KEYS.EXPAND, e.target.checked);
+                }
+                if (e.target.id === 'btn-clear-cache') {
+                    this.clearAllCaches(false);
+                    this.showToast(this.t('clear_cache_done'), 'success');
                 }
                 if (wasOpen) this.togglePanel(true);
             };
@@ -1008,120 +1073,225 @@
             this.initDrag();
         }
 
-        async refreshTrust(autoRetry = true) {
+        renderFromCacheAll() {
+            if (this.trustData) this.renderTrust(this.trustData);
+            if (this.creditData) this.renderCredit(this.creditData);
+            if (this.cdkCache?.data) this.renderCDKContent(this.cdkCache.data);
+        }
+
+        prewarmAll(force = false) {
+            this.refreshTrust({ background: true, force });
+            this.refreshCredit({ background: true, force });
+            this.refreshCDK({ background: true, force });
+        }
+
+        isPageActive(page) {
+            return this.dom.panel?.style.display === 'flex' && this.activePage === page;
+        }
+
+        beginWait(page, onlyWhenActive = true) {
+            const ps = this.pendingStatus[page];
+            ps.count += 1;
+            if (!ps.since) ps.since = Date.now();
+            const shouldTimer = !onlyWhenActive || this.isPageActive(page);
+            if (!ps.timer && shouldTimer) {
+                const wait = Math.max(0, 5000 - (Date.now() - ps.since));
+                ps.timer = setTimeout(() => this.showSlowTip(page), wait);
+            }
+            return () => this.finishWait(page, onlyWhenActive);
+        }
+
+        finishWait(page, onlyWhenActive = true) {
+            const ps = this.pendingStatus[page];
+            ps.count = Math.max(0, ps.count - 1);
+            if (ps.count === 0) {
+                this.clearSlowTip(page);
+                ps.since = null;
+            }
+            if (ps.count > 0 && (!ps.timer) && (!onlyWhenActive || this.isPageActive(page))) {
+                const wait = Math.max(0, 5000 - (Date.now() - ps.since));
+                ps.timer = setTimeout(() => this.showSlowTip(page), wait);
+            }
+        }
+
+        showSlowTip(page) {
+            const ps = this.pendingStatus[page];
+            if (ps.timer) {
+                clearTimeout(ps.timer);
+                ps.timer = null;
+            }
+            if (!this.isPageActive(page)) return;
+            const el = Utils.el(`.lda-slow-tip[data-page="${page}"]`, this.dom.root);
+            if (el) {
+                el.textContent = this.t('slow_tip');
+                el.style.display = 'block';
+            }
+            ps.slowShown = true;
+        }
+
+        clearSlowTip(page) {
+            const ps = this.pendingStatus[page];
+            if (ps.timer) {
+                clearTimeout(ps.timer);
+                ps.timer = null;
+            }
+            const el = Utils.el(`.lda-slow-tip[data-page="${page}"]`, this.dom.root);
+            if (el) el.style.display = 'none';
+            ps.slowShown = false;
+        }
+
+        refreshSlowTipForPage(page) {
+            const ps = this.pendingStatus[page];
+            if (ps.count > 0) {
+                const wait = Math.max(0, 5000 - (Date.now() - (ps.since || Date.now())));
+                if (ps.timer) clearTimeout(ps.timer);
+                ps.timer = setTimeout(() => this.showSlowTip(page), wait);
+            } else {
+                this.clearSlowTip(page);
+            }
+        }
+
+        makeUserSig(info) {
+            if (!info) return null;
+            if (info.user_id || info.id) return `uid:${info.user_id || info.id}`;
+            if (info.username) return `uname:${info.username}`;
+            return null;
+        }
+
+        ensureUserSig(sig) {
+            if (!sig) return;
+            if (this.userSig && this.userSig !== sig) {
+                this.clearAllCaches(false);
+            }
+            this.userSig = sig;
+            Utils.set(CONFIG.KEYS.USER_SIG, sig);
+        }
+
+        clearAllCaches(showToast = true) {
+            this.trustData = null;
+            this.creditData = null;
+            this.cdkCache = null;
+            this.state.trustCache = {};
+            this.lastFetch = { trust: 0, credit: 0, cdk: 0 };
+            this.userSig = null;
+            Utils.set(CONFIG.KEYS.CACHE_TRUST, {});
+            Utils.set(CONFIG.KEYS.CACHE_TRUST_DATA, null);
+            Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
+            Utils.set(CONFIG.KEYS.CACHE_CDK, null);
+            Utils.set(CONFIG.KEYS.CACHE_META, this.lastFetch);
+            Utils.set(CONFIG.KEYS.USER_SIG, null);
+            if (showToast) this.showToast(this.t('clear_cache_done'), 'success');
+            if (this.dom.trust) this.dom.trust.innerHTML = '';
+            if (this.dom.credit) this.dom.credit.innerHTML = '';
+            if (this.dom.cdk) this.dom.cdk.innerHTML = '';
+        }
+
+        isExpired(type) {
+            const minutes = Number.isFinite(this.state.refreshInterval) ? this.state.refreshInterval : 30;
+            if (minutes <= 0) return false;
+            const interval = minutes * 60 * 1000;
+            return (Date.now() - (this.lastFetch[type] || 0)) > interval;
+        }
+
+        markFetch(type) {
+            this.lastFetch[type] = Date.now();
+            Utils.set(CONFIG.KEYS.CACHE_META, this.lastFetch);
+        }
+
+        async refreshTrust(arg = true) {
+            const base = { background: false, force: undefined, autoRetry: true };
+            const opts = typeof arg === 'object' ? { ...base, ...arg } : { ...base, autoRetry: !!arg, force: arg === false ? false : undefined };
+            const autoRetry = opts.autoRetry;
+            const forceFetch = opts.force ?? !opts.background;
             const wrap = this.dom.trust;
-            // 查找刷新按钮是否已存在，用于显示 Loading
             const existingBtn = Utils.el('#btn-re-trust', wrap);
+            const endWait = this.beginWait('trust');
             if(existingBtn) existingBtn.classList.add('loading');
-            else wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+            else if (!wrap.innerHTML) wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
 
             try {
-                // 同时获取信任级别和排名数据
-                const [html, forumStats] = await Promise.all([
-                    Utils.request(CONFIG.API.TRUST),
-                    Utils.fetchForumStats()
-                ]);
-                
-                const doc = new DOMParser().parseFromString(html, 'text/html');
-                const bodyText = doc.body?.textContent || '';
-                const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
-                const levelNode = Array.from(doc.querySelectorAll('h2')).find(x => x.textContent.includes('信任级别'));
-                if (!levelNode) {
-                    if (loginHint || /登录|login|sign in/i.test(bodyText)) throw new Error("NeedLogin");
-                    throw new Error("ParseError");
+                if (this.trustData && !forceFetch && !this.isExpired('trust')) {
+                    this.renderTrust(this.trustData);
+                    return;
                 }
+                if (this.trustData) this.renderTrust(this.trustData);
 
-                const level = levelNode.textContent.replace(/\D/g, '');
-                const isPass = levelNode.parentElement.querySelector('.text-green-500') !== null;
-                const rows = Array.from(levelNode.parentElement.parentElement.querySelectorAll('tr')).slice(1);
-                if (rows.length === 0) this.focusFlags.trust = true;
-                
-                let listHtml = '';
-                const newCache = {}; 
-                const seenNames = {}; 
+                const trustPromise = Utils.request(CONFIG.API.TRUST);
+                const statsPromise = Utils.fetchForumStats();
 
-                rows.forEach(tr => {
-                    const tds = tr.querySelectorAll('td');
-                    if (tds.length < 3) return;
-                    
-                    let name = tds[0].textContent.trim().split('（')[0];
-                    const current = parseFloat(tds[1].textContent.replace(/,/g, '')); 
-                    const target = parseFloat(tds[2].textContent.replace(/,/g, ''));
-                    const isGood = tds[1].classList.contains('text-green-500');
-                    
-                    if (seenNames[name]) {
-                        name = name + ' (All)';
-                    }
-                    seenNames[name] = true;
-
-                    // --- Diff Logic ---
-                    const oldVal = this.state.trustCache[name];
-                    let diffHtml = '';
-                    
-                    if (typeof oldVal === 'number' && oldVal !== current) {
-                        const delta = current - oldVal;
-                        if (delta > 0) diffHtml = `<span class="lda-diff up">▲${delta}</span>`;
-                        else if (delta < 0) diffHtml = `<span class="lda-diff down">▼${Math.abs(delta)}</span>`;
+                const trustData = await trustPromise.then(html => {
+                    const doc = new DOMParser().parseFromString(html, 'text/html');
+                    const bodyText = doc.body?.textContent || '';
+                    const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
+                    const levelNode = Array.from(doc.querySelectorAll('h2')).find(x => x.textContent.includes('信任级别'));
+                    if (!levelNode) {
+                        if (loginHint || /登录|login|sign in/i.test(bodyText)) throw new Error("NeedLogin");
+                        throw new Error("ParseError");
                     }
 
-                    newCache[name] = current;
+                    const level = levelNode.textContent.replace(/\D/g, '');
+                    const isPass = levelNode.parentElement.querySelector('.text-green-500') !== null;
+                    const rows = Array.from(levelNode.parentElement.parentElement.querySelectorAll('tr')).slice(1);
+                    if (rows.length === 0) this.focusFlags.trust = true;
                     
-                    let pct = 0;
-                    if (target > 0) pct = Math.min((current/target)*100, 100);
-                    else if (isGood) pct = 100;
+                    const items = [];
+                    const newCache = {}; 
+                    const seenNames = {}; 
 
-                    listHtml += Utils.html`
-                        <div class="lda-item">
-                            <div class="lda-item-top">
-                                <span class="lda-i-name">${name}</span>
-                                <span class="lda-i-val" style="color:${isGood?'var(--lda-green)':'var(--lda-red)'}">
-                                    ${tds[1].textContent.trim()} ${diffHtml} <span style="color:var(--lda-dim);font-weight:400;margin-left:4px">/ ${target||'-'}</span>
-                                </span>
-                            </div>
-                            <div class="lda-progress"><div class="lda-fill" style="width:${pct}%; background:${isGood?'var(--lda-green)':'var(--lda-red)'}"></div></div>
-                        </div>
-                    `;
+                    rows.forEach(tr => {
+                        const tds = tr.querySelectorAll('td');
+                        if (tds.length < 3) return;
+                        
+                        let name = tds[0].textContent.trim().split('（')[0];
+                        const current = parseFloat(tds[1].textContent.replace(/,/g, '')); 
+                        const target = parseFloat(tds[2].textContent.replace(/,/g, ''));
+                        const isGood = tds[1].classList.contains('text-green-500');
+                        
+                        if (seenNames[name]) {
+                            name = name + ' (All)';
+                        }
+                        seenNames[name] = true;
+
+                        const oldVal = this.state.trustCache[name];
+                        let diff = 0;
+                        if (typeof oldVal === 'number' && oldVal !== current) {
+                            diff = current - oldVal;
+                        }
+
+                        newCache[name] = current;
+                        
+                        let pct = 0;
+                        if (target > 0) pct = Math.min((current/target)*100, 100);
+                        else if (isGood) pct = 100;
+
+                        items.push({ name, current: tds[1].textContent.trim(), target, isGood, pct, diff });
+                    });
+
+                    this.state.trustCache = newCache;
+                    Utils.set(CONFIG.KEYS.CACHE_TRUST, newCache);
+
+                    return { level, isPass, items };
                 });
 
-                this.state.trustCache = newCache;
-                Utils.set(CONFIG.KEYS.CACHE_TRUST, newCache);
+                const statsData = await statsPromise.then(forumStats => {
+                    if (forumStats?.personal?.user?.username) {
+                        this.ensureUserSig(this.makeUserSig({ username: forumStats.personal.user.username }));
+                    }
+                    return {
+                        dailyRank: forumStats?.dailyRank || null,
+                        globalRank: forumStats?.globalRank || null,
+                        score: forumStats?.score || null
+                    };
+                }).catch(() => null);
 
-                // 构建排名统计栏
-                let statsHtml = '';
-                if (forumStats.globalRank || forumStats.dailyRank || forumStats.score) {
-                    statsHtml = `<a href="${CONFIG.API.LINK_LEADERBOARD}" target="_blank" class="lda-stats-bar">`;
-                    if (forumStats.dailyRank) statsHtml += `<span class="lda-stat-item">${this.t('rank_today')}: <span class="num today">${forumStats.dailyRank}</span></span>`;
-                    if (forumStats.globalRank) statsHtml += `<span class="lda-stat-item">${this.t('rank')}: <span class="num rank">${forumStats.globalRank}</span></span>`;
-                    if (forumStats.score) statsHtml += `<span class="lda-stat-item">${this.t('score')}: <span class="num score">${forumStats.score.toLocaleString()}</span></span>`;
-                    statsHtml += `</a>`;
-                }
-
-                wrap.innerHTML = Utils.html`
-                    <div class="lda-card">
-                        <div class="lda-actions-group">
-                            <a href="${CONFIG.API.LINK_TRUST}" target="_blank" class="lda-act-btn" title="${this.t('link_tip')}">
-                                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
-                            </a>
-                            <div class="lda-act-btn" id="btn-re-trust" title="${this.t('refresh_tip')}">
-                                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
-                            </div>
-                        </div>
-                        <div class="lda-info-header">
-                            <div class="lda-lvl-group">
-                                <span class="lda-big-lvl">Lv.${level}</span>
-                                <span class="lda-badge ${isPass?'ok':'no'}">${isPass ? this.t('status_ok') : this.t('status_fail')}</span>
-                            </div>
-                        </div>
-                        ${statsHtml}
-                        ${listHtml}
-                    </div>
-                `;
-                Utils.el('#btn-re-trust', wrap).onclick = () => this.refreshTrust();
+                this.trustData = { basic: trustData, stats: statsData };
+                this.renderTrust(this.trustData);
+                Utils.set(CONFIG.KEYS.CACHE_TRUST_DATA, this.trustData);
+                this.markFetch('trust');
 
             } catch (e) {
                 const isLogin = e?.message === 'NeedLogin' || e?.status === 401;
 
-                // 自动重试一次，再显示 Retry
                 if (autoRetry && !isLogin) {
                     this.focusFlags.trust = true;
                     setTimeout(() => this.refreshTrust(false), 200);
@@ -1150,57 +1320,115 @@
                 wrap.innerHTML = `<div class="lda-card" style="text-align:center;color:var(--lda-red)">${this.t('connect_err')}<br><button id="retry-trust" style="margin-top:8px;padding:4px 12px;">Retry</button></div>`;
                 Utils.el('#retry-trust', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshTrust(); };
                 this.focusFlags.trust = true;
+            } finally {
+                if (existingBtn) existingBtn.classList.remove('loading');
+                endWait();
             }
         }
 
-        async refreshCredit(autoRetry = true) {
-            const wrap = this.dom.credit;
-            const existingBtn = Utils.el('#btn-re-credit', wrap);
-            if(existingBtn) existingBtn.classList.add('loading');
-            else wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+        renderTrust(data) {
+            const wrap = this.dom.trust;
+            if (!data?.basic) {
+                wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+                return;
+            }
+            const { level, isPass, items } = data.basic;
+            const stats = data.stats || {};
+            let statsHtml = '';
+            if (stats.globalRank || stats.dailyRank || stats.score) {
+                statsHtml = `<a href="${CONFIG.API.LINK_LEADERBOARD}" target="_blank" class="lda-stats-bar">`;
+                if (stats.dailyRank) statsHtml += `<span class="lda-stat-item">${this.t('rank_today')}: <span class="num today">${stats.dailyRank}</span></span>`;
+                if (stats.globalRank) statsHtml += `<span class="lda-stat-item">${this.t('rank')}: <span class="num rank">${stats.globalRank}</span></span>`;
+                if (stats.score) statsHtml += `<span class="lda-stat-item">${this.t('score')}: <span class="num score">${stats.score.toLocaleString()}</span></span>`;
+                statsHtml += `</a>`;
+            }
 
-            try {
-                const [infoRes, statRes] = await Promise.all([
-                    Utils.request(CONFIG.API.CREDIT_INFO, { withCredentials: true }),
-                    Utils.request(CONFIG.API.CREDIT_STATS, { withCredentials: true })
-                ]);
-                const info = JSON.parse(infoRes).data;
-                const stats = JSON.parse(statRes).data || [];
-                let listHtml = '';
-                if(stats.length === 0) {
-                    listHtml = `<div style="text-align:center;padding:12px;color:var(--lda-dim);font-size:12px">${this.t('no_rec')}</div>`;
-                    this.focusFlags.credit = true; // 记录空数据，回到前台再拉取
-                } else {
-                    [...stats].reverse().forEach(x => {
-                        const date = x.date.slice(5).replace('-','/');
-                        const inc = parseFloat(x.income);
-                        const exp = parseFloat(x.expense);
-                        if(inc > 0) listHtml += `<div class="lda-row-rec"><span>${date} ${this.t('income')}</span><span class="lda-amt" style="color:var(--lda-red)">+${inc}</span></div>`;
-                        if(exp > 0) listHtml += `<div class="lda-row-rec"><span>${date} ${this.t('expense')}</span><span class="lda-amt" style="color:var(--lda-green)">-${exp}</span></div>`;
-                    });
+            let listHtml = '';
+            (items || []).forEach(it => {
+                let diffHtml = '';
+                if (it.diff) {
+                    if (it.diff > 0) diffHtml = `<span class="lda-diff up">▲${it.diff}</span>`;
+                    else if (it.diff < 0) diffHtml = `<span class="lda-diff down">▼${Math.abs(it.diff)}</span>`;
                 }
-                wrap.innerHTML = Utils.html`
-                    <div class="lda-card">
-                        <div class="lda-actions-group">
-                            <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-act-btn" title="${this.t('link_tip')}">
-                                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
-                            </a>
-                            <div class="lda-act-btn" id="btn-re-credit" title="${this.t('refresh_tip')}">
-                                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
-                            </div>
+                listHtml += Utils.html`
+                    <div class="lda-item">
+                        <div class="lda-item-top">
+                            <span class="lda-i-name">${it.name}</span>
+                            <span class="lda-i-val" style="color:${it.isGood?'var(--lda-green)':'var(--lda-red)'}">
+                                ${it.current} ${diffHtml} <span style="color:var(--lda-dim);font-weight:400;margin-left:4px">/ ${it.target||'-'}</span>
+                            </span>
                         </div>
-                        <div class="lda-credit-hero">
-                            <div class="lda-credit-num">${info.available_balance}</div>
-                            <div class="lda-credit-label">${this.t('balance')}</div>
-                            <div style="margin-top:6px;font-size:12px;color:var(--lda-dim)">${this.t('daily_limit')}: <span style="font-weight:600;color:var(--lda-fg)">${info.remain_quota}</span></div>
-                        </div>
-                    </div>
-                    <div class="lda-card">
-                        <div style="font-size:11px;font-weight:700;color:var(--lda-dim);margin-bottom:10px;">${this.t('recent')}</div>
-                        ${listHtml}
+                        <div class="lda-progress"><div class="lda-fill" style="width:${it.pct}%; background:${it.isGood?'var(--lda-green)':'var(--lda-red)'}"></div></div>
                     </div>
                 `;
-                Utils.el('#btn-re-credit', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCredit(); };
+            });
+
+            wrap.innerHTML = Utils.html`
+                <div class="lda-card">
+                    <div class="lda-actions-group">
+                        <a href="${CONFIG.API.LINK_TRUST}" target="_blank" class="lda-act-btn" title="${this.t('link_tip')}">
+                            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+                        </a>
+                        <div class="lda-act-btn" id="btn-re-trust" title="${this.t('refresh_tip')}">
+                            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
+                        </div>
+                    </div>
+                    <div class="lda-info-header">
+                        <div class="lda-lvl-group">
+                            <span class="lda-big-lvl">Lv.${level}</span>
+                            <span class="lda-badge ${isPass?'ok':'no'}">${isPass ? this.t('status_ok') : this.t('status_fail')}</span>
+                        </div>
+                    </div>
+                    ${statsHtml}
+                    ${listHtml}
+                </div>
+            `;
+            Utils.el('#btn-re-trust', wrap).onclick = () => this.refreshTrust();
+        }
+
+        async refreshCredit(arg = true) {
+            const base = { background: false, force: undefined, autoRetry: true };
+            const opts = typeof arg === 'object' ? { ...base, ...arg } : { ...base, autoRetry: !!arg, force: arg === false ? false : undefined };
+            const autoRetry = opts.autoRetry;
+            const forceFetch = opts.force ?? !opts.background;
+            const wrap = this.dom.credit;
+            const existingBtn = Utils.el('#btn-re-credit', wrap);
+            const endWait = this.beginWait('credit');
+            if(existingBtn) existingBtn.classList.add('loading');
+            else if (!wrap.innerHTML) wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+
+            try {
+                if (this.creditData && !forceFetch && !this.isExpired('credit')) {
+                    this.renderCredit(this.creditData);
+                    endWait();
+                    if (existingBtn) existingBtn.classList.remove('loading');
+                    return;
+                }
+                if (this.creditData) this.renderCredit(this.creditData);
+
+                const infoPromise = Utils.request(CONFIG.API.CREDIT_INFO, { withCredentials: true });
+                const statPromise = Utils.request(CONFIG.API.CREDIT_STATS, { withCredentials: true });
+
+                let info = null;
+                let stats = [];
+
+                await Promise.all([
+                    infoPromise.then(r => {
+                        info = JSON.parse(r).data;
+                        const sig = this.makeUserSig(info);
+                        if (sig) this.ensureUserSig(sig);
+                    }),
+                    statPromise.then(r => {
+                        stats = JSON.parse(r).data || [];
+                    })
+                ]);
+
+                this.creditData = { info, stats };
+                this.renderCredit(this.creditData);
+                Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, this.creditData);
+                this.markFetch('credit');
+                if (existingBtn) existingBtn.classList.remove('loading');
+                endWait();
             } catch(e) {
                 const isLogin = e?.status === 401 || /unauthorized|not\s*login/i.test(e?.responseText || '');
 
@@ -1208,6 +1436,7 @@
                     if (existingBtn) existingBtn.classList.remove('loading');
                     this.focusFlags.credit = true;
                     setTimeout(() => this.refreshCredit(false), 200);
+                    endWait();
                     return;
                 }
 
@@ -1228,6 +1457,7 @@
                         </div>
                     `;
                     Utils.el('#btn-credit-refresh', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshCredit(); };
+                    endWait();
                     return;
                 }
 
@@ -1235,7 +1465,52 @@
                 Utils.el('#retry-credit', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshCredit(); };
                 if (existingBtn) existingBtn.classList.remove('loading');
                 this.focusFlags.credit = true;
+                endWait();
             }
+        }
+
+        renderCredit(data) {
+            const wrap = this.dom.credit;
+            const info = data?.info;
+            if (!info) {
+                wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+                return;
+            }
+            const stats = data.stats || [];
+            let listHtml = '';
+            if(stats.length === 0) {
+                listHtml = `<div style="text-align:center;padding:12px;color:var(--lda-dim);font-size:12px">${this.t('no_rec')}</div>`;
+            } else {
+                [...stats].reverse().forEach(x => {
+                    const date = x.date.slice(5).replace('-','/');
+                    const inc = parseFloat(x.income);
+                    const exp = parseFloat(x.expense);
+                    if(inc > 0) listHtml += `<div class="lda-row-rec"><span>${date} ${this.t('income')}</span><span class="lda-amt" style="color:var(--lda-red)">+${inc}</span></div>`;
+                    if(exp > 0) listHtml += `<div class="lda-row-rec"><span>${date} ${this.t('expense')}</span><span class="lda-amt" style="color:var(--lda-green)">-${exp}</span></div>`;
+                });
+            }
+            wrap.innerHTML = Utils.html`
+                <div class="lda-card">
+                    <div class="lda-actions-group">
+                        <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-act-btn" title="${this.t('link_tip')}">
+                            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+                        </a>
+                        <div class="lda-act-btn" id="btn-re-credit" title="${this.t('refresh_tip')}">
+                            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
+                        </div>
+                    </div>
+                    <div class="lda-credit-hero">
+                        <div class="lda-credit-num">${info.available_balance}</div>
+                        <div class="lda-credit-label">${this.t('balance')}</div>
+                        <div style="margin-top:6px;font-size:12px;color:var(--lda-dim)">${this.t('daily_limit')}: <span style="font-weight:600;color:var(--lda-fg)">${info.remain_quota}</span></div>
+                    </div>
+                </div>
+                <div class="lda-card">
+                    <div style="font-size:11px;font-weight:700;color:var(--lda-dim);margin-bottom:10px;">${this.t('recent')}</div>
+                    ${listHtml}
+                </div>
+            `;
+            Utils.el('#btn-re-credit', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCredit(); };
         }
 
         async refreshCDK() {
@@ -1246,20 +1521,31 @@
                 if (btn) btn.classList.toggle('loading', on);
             };
 
+            const endWait = this.beginWait('cdk');
+
             if (existingBtn) setLoading(true);
-            else wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+            else if (!wrap.innerHTML) wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
 
             // 如果有新鲜缓存，先展示，避免空白
             if (this.isCDKCacheFresh()) {
                 this.renderCDKContent(this.cdkCache.data);
+                if (!this.isExpired('cdk')) {
+                    setLoading(false);
+                    endWait();
+                    return;
+                }
             }
 
             // 主请求（GM），Tampermonkey 可能失败
             try {
                 const info = await this.fetchCDKDirect();
                 this.cacheCDKData(info);
+                const sig = this.makeUserSig({ username: info.username, user_id: info.id });
+                if (sig) this.ensureUserSig(sig);
                 this.renderCDKContent(info);
                 setLoading(false);
+                this.markFetch('cdk');
+                endWait();
                 return;
             } catch (_) {}
 
@@ -1267,15 +1553,23 @@
             try {
                 const info = await this.fetchCDKViaBridge();
                 this.cacheCDKData(info);
+                const sig = this.makeUserSig({ username: info.username, user_id: info.id });
+                if (sig) this.ensureUserSig(sig);
                 this.renderCDKContent(info);
                 setLoading(false);
+                this.markFetch('cdk');
+                endWait();
                 return;
             } catch (_) {
                 setLoading(false);
                 // 如果已经展示了缓存，就不覆盖为未授权提示
-                if (this.isCDKCacheFresh()) return;
+                if (this.isCDKCacheFresh()) {
+                    endWait();
+                    return;
+                }
                 this.focusFlags.cdk = true;
                 this.renderCDKAuth();
+                endWait();
             }
         }
 
@@ -1306,7 +1600,6 @@
             if (minutes <= 0) return;
             const interval = minutes * 60 * 1000;
             this.autoRefreshTimer = setInterval(() => {
-                if (this.dom.panel.style.display !== 'flex') return;
                 this.refreshTrust(false);
                 this.refreshCredit(false);
                 this.refreshCDK();
@@ -1438,15 +1731,17 @@
             this.dom.ball.style.display = show ? 'none' : 'flex';
             this.dom.panel.style.display = show ? 'flex' : 'none';
             if (show) {
-                const needTrust = !this.dom.trust.querySelector('.lda-card');
-                const needCredit = !this.dom.credit.querySelector('.lda-card');
-                const needCDK = !this.dom.cdk.querySelector('.lda-card');
+                this.renderFromCacheAll();
+                const needTrust = !this.trustData || this.isExpired('trust');
+                const needCredit = !this.creditData || this.isExpired('credit');
+                const needCDK = !this.cdkCache || this.isExpired('cdk');
                 if (!this.dom.panel.dataset.loaded || needTrust || needCredit || needCDK) {
-                    this.refreshTrust();
-                    this.refreshCredit();
+                    this.refreshTrust({ force: needTrust });
+                    this.refreshCredit({ force: needCredit });
                     this.refreshCDK();
                     this.dom.panel.dataset.loaded = '1';
                 }
+                this.refreshSlowTipForPage(this.activePage);
             }
             if (show) this.updatePanelSide();
         }
