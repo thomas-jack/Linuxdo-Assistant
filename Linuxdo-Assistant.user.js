@@ -183,17 +183,31 @@
     // 工具函数
     class Utils {
         static async request(url, options = {}) {
-            const { withCredentials, ...validOptions } = options;
-            return new Promise((resolve, reject) => {
-                GM_xmlhttpRequest({
-                    method: 'GET', url,
-                    headers: { 'Cache-Control': 'no-cache' },
-                    anonymous: false, // 确保跨域请求发送 cookie
-                    ...validOptions,
-                    onload: r => (r.status >= 200 && r.status < 300) ? resolve(r.responseText) : reject(r),
-                    onerror: e => reject(e)
-                });
-            });
+            const { withCredentials, retries = 3, timeout = 10000, ...validOptions } = options;
+            const attempts = Math.max(1, retries);
+            let lastErr;
+            for (let i = 0; i < attempts; i++) {
+                try {
+                    const res = await new Promise((resolve, reject) => {
+                        GM_xmlhttpRequest({
+                            method: 'GET',
+                            url,
+                            headers: { 'Cache-Control': 'no-cache' },
+                            anonymous: false, // 确保跨域请求发送 cookie
+                            timeout,
+                            ...validOptions,
+                            onload: r => (r.status >= 200 && r.status < 300) ? resolve(r.responseText) : reject(r),
+                            onerror: e => reject(e),
+                            ontimeout: () => reject(new Error('timeout'))
+                        });
+                    });
+                    return res;
+                } catch (e) {
+                    lastErr = e;
+                    if (i === attempts - 1) throw lastErr;
+                }
+            }
+            throw lastErr;
         }
         static get(k, d) { return GM_getValue(k, d); }
         static set(k, v) { GM_setValue(k, v); }
@@ -204,7 +218,24 @@
         // 获取论坛排名数据
         static async fetchForumStats() {
             const baseUrl = window.location.origin;
-            const fetchJson = (url) => fetch(url).then(r => r.json()).catch(() => null);
+            const fetchJson = async (url) => {
+                let lastErr = null;
+                for (let i = 0; i < 3; i++) {
+                    const controller = new AbortController();
+                    const timer = setTimeout(() => controller.abort(), 10000);
+                    try {
+                        const r = await fetch(url, { signal: controller.signal });
+                        clearTimeout(timer);
+                        if (!r.ok) throw new Error(`http ${r.status}`);
+                        return await r.json();
+                    } catch (e) {
+                        clearTimeout(timer);
+                        lastErr = e;
+                        if (i === 2) return null;
+                    }
+                }
+                return null;
+            };
             try {
                 const [daily, global] = await Promise.all([
                     fetchJson(CONFIG.API.LEADERBOARD_DAILY),
