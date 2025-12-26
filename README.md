@@ -30,9 +30,9 @@
 
 ### 功能页面
 
-| 信任级别 | 积分详情 | CDK 社区分数 | 偏好设置 |
+| 信任级别 | 积分详情 | CDK分数 | 偏好设置 |
 |:---:|:---:|:---:|:---:|
-| ![信任级别](pics/p1.png) | ![积分详情](pics/p2.png) | ![CDK分数](pics/p3.png) | ![偏好设置](pics/p3.png) |
+| ![信任级别](pics/p1.png) | ![积分详情](pics/p2.png) | ![CDK分数](pics/p4.png) | ![偏好设置](pics/p3.png) |
 
 > 注：CDK 社区分数功能需要先访问 [cdk.linux.do](https://cdk.linux.do/dashboard) 完成 OAuth 授权
 
