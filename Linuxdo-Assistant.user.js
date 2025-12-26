@@ -97,6 +97,7 @@
             theme_tip: "点击切换：亮色 / 深色 / 跟随系统",
             link_tip: "前往网页版",
             refresh_tip: "刷新数据",
+            refresh_done: "刷新完毕",
             check_update: "检查更新",
             checking: "检查中...",
             new_version: "发现新版本",
@@ -166,6 +167,7 @@
             theme_tip: "Toggle: Light / Dark / Auto",
             link_tip: "Open Website",
             refresh_tip: "Refresh",
+            refresh_done: "Refreshed",
             check_update: "Check Update",
             checking: "Checking...",
             new_version: "New Version",
@@ -866,13 +868,6 @@
                         <button class="lda-sort-btn" id="btn-save-order">${this.t('tab_order_save')}</button>
                     </div>
                 </div>
-                <div class="lda-card">
-                    <div class="lda-opt" style="flex-direction:column; align-items:flex-start; margin:0; padding:0; border:none;">
-                        <div class="lda-opt-label">${this.t('clear_cache')}</div>
-                        <div class="lda-opt-sub" style="margin:6px 0 10px 0;">${this.t('clear_cache_tip')}</div>
-                        <button class="lda-sort-btn" id="btn-clear-cache">${this.t('clear_cache')}</button>
-                    </div>
-                </div>
                 <div class="lda-support">
                     <div class="lda-support-header">
                         <div class="lda-support-title">
@@ -883,6 +878,13 @@
                     </div>
                     <div class="lda-support-grid">
                         ${supportCardsHtml}
+                    </div>
+                </div>
+                <div class="lda-card" style="margin-top:10px;">
+                    <div class="lda-opt" style="flex-direction:column; align-items:flex-start; margin:0; padding:0; border:none;">
+                        <div class="lda-opt-label">${this.t('clear_cache')}</div>
+                        <div class="lda-opt-sub" style="margin:6px 0 10px 0;">${this.t('clear_cache_tip')}</div>
+                        <button class="lda-sort-btn" id="btn-clear-cache">${this.t('clear_cache')}</button>
                     </div>
                 </div>
                 <div style="text-align:center; margin-top:8px;">
@@ -1034,8 +1036,11 @@
                     Utils.set(CONFIG.KEYS.EXPAND, e.target.checked);
                 }
                 if (e.target.id === 'btn-clear-cache') {
-                    this.clearAllCaches(false);
-                    this.showToast(this.t('clear_cache_done'), 'success');
+                    const confirmed = window.confirm(this.t('clear_cache_tip'));
+                    if (confirmed) {
+                        this.clearAllCaches(false);
+                        this.showToast(this.t('clear_cache_done'), 'success');
+                    }
                 }
                 if (wasOpen) this.togglePanel(true);
             };
@@ -1199,9 +1204,10 @@
         }
 
         async refreshTrust(arg = true) {
-            const base = { background: false, force: undefined, autoRetry: true };
+            const base = { background: false, force: undefined, autoRetry: true, manual: false };
             const opts = typeof arg === 'object' ? { ...base, ...arg } : { ...base, autoRetry: !!arg, force: arg === false ? false : undefined };
             const autoRetry = opts.autoRetry;
+            const manual = opts.manual;
             const forceFetch = opts.force ?? !opts.background;
             const wrap = this.dom.trust;
             const existingBtn = Utils.el('#btn-re-trust', wrap);
@@ -1288,6 +1294,7 @@
                 this.renderTrust(this.trustData);
                 Utils.set(CONFIG.KEYS.CACHE_TRUST_DATA, this.trustData);
                 this.markFetch('trust');
+                if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
 
             } catch (e) {
                 const isLogin = e?.message === 'NeedLogin' || e?.status === 401;
@@ -1383,13 +1390,14 @@
                     ${listHtml}
                 </div>
             `;
-            Utils.el('#btn-re-trust', wrap).onclick = () => this.refreshTrust();
+            Utils.el('#btn-re-trust', wrap).onclick = (e) => { e.stopPropagation(); this.refreshTrust({ manual: true, force: true }); };
         }
 
         async refreshCredit(arg = true) {
-            const base = { background: false, force: undefined, autoRetry: true };
+            const base = { background: false, force: undefined, autoRetry: true, manual: false };
             const opts = typeof arg === 'object' ? { ...base, ...arg } : { ...base, autoRetry: !!arg, force: arg === false ? false : undefined };
             const autoRetry = opts.autoRetry;
+            const manual = opts.manual;
             const forceFetch = opts.force ?? !opts.background;
             const wrap = this.dom.credit;
             const existingBtn = Utils.el('#btn-re-credit', wrap);
@@ -1428,6 +1436,7 @@
                 Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, this.creditData);
                 this.markFetch('credit');
                 if (existingBtn) existingBtn.classList.remove('loading');
+                if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
                 endWait();
             } catch(e) {
                 const isLogin = e?.status === 401 || /unauthorized|not\s*login/i.test(e?.responseText || '');
@@ -1510,10 +1519,13 @@
                     ${listHtml}
                 </div>
             `;
-            Utils.el('#btn-re-credit', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCredit(); };
+            Utils.el('#btn-re-credit', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCredit({ manual: true, force: true }); };
         }
 
-        async refreshCDK() {
+        async refreshCDK(arg = true) {
+            const base = { background: false, force: undefined, manual: false };
+            const opts = typeof arg === 'object' ? { ...base, ...arg } : { ...base, manual: !!arg, force: arg === false ? false : undefined };
+            const manual = opts.manual;
             const wrap = this.dom.cdk;
             const existingBtn = Utils.el('#btn-re-cdk', wrap);
             const setLoading = (on) => {
@@ -1529,7 +1541,7 @@
             // 如果有新鲜缓存，先展示，避免空白
             if (this.isCDKCacheFresh()) {
                 this.renderCDKContent(this.cdkCache.data);
-                if (!this.isExpired('cdk')) {
+                if (!opts.force && !this.isExpired('cdk')) {
                     setLoading(false);
                     endWait();
                     return;
@@ -1545,6 +1557,7 @@
                 this.renderCDKContent(info);
                 setLoading(false);
                 this.markFetch('cdk');
+                if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
                 endWait();
                 return;
             } catch (_) {}
@@ -1558,6 +1571,7 @@
                 this.renderCDKContent(info);
                 setLoading(false);
                 this.markFetch('cdk');
+                if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
                 endWait();
                 return;
             } catch (_) {
@@ -1705,7 +1719,7 @@
                     </div>
                 </div>
             `;
-            Utils.el('#btn-re-cdk', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCDK(); };
+            Utils.el('#btn-re-cdk', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCDK({ manual: true, force: true }); };
         }
 
         renderCDKAuth() {
