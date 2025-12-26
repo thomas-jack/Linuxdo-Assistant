@@ -54,7 +54,9 @@
             REFRESH_INTERVAL: 'lda_v5_refresh_interval',
             OPACITY: 'lda_v5_opacity',
             CACHE_META: 'lda_v5_cache_meta',
-            USER_SIG: 'lda_v5_user_sig'
+            USER_SIG: 'lda_v5_user_sig',
+            LAST_SKIP_UPDATE: 'lda_v5_last_skip_update',
+            LAST_AUTO_CHECK: 'lda_v5_last_auto_check'
         }
     };
     const AUTO_REFRESH_MS = 30 * 60 * 1000; // 半小时定时刷新
@@ -666,6 +668,8 @@
             this.creditData = Utils.get(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
             this.lastFetch = Utils.get(CONFIG.KEYS.CACHE_META, { trust: 0, credit: 0, cdk: 0 });
             this.userSig = Utils.get(CONFIG.KEYS.USER_SIG, null);
+            this.lastSkipUpdate = Utils.get(CONFIG.KEYS.LAST_SKIP_UPDATE, 0);
+            this.lastAutoCheck = Utils.get(CONFIG.KEYS.LAST_AUTO_CHECK, 0);
             this.focusFlags = { trust: false, credit: false, cdk: false };
             this.autoRefreshTimer = null;
             this.cdkBridgeInit = false;
@@ -697,6 +701,7 @@
             this.renderFromCacheAll();
             this.prewarmAll(true);
             this.startAutoRefreshTimer();
+            this.maybeAutoCheckUpdate();
             
             if (this.state.expand || forceOpen) {
                 this.togglePanel(true);
@@ -988,7 +993,7 @@
         bindGlobalEvents() {
             // 悬浮球点击在 initDrag 中处理（区分拖动和点击）
             Utils.el('#lda-btn-close').onclick = () => this.togglePanel(false);
-            Utils.el('#lda-btn-update').onclick = (e) => { e.stopPropagation(); this.checkUpdate(); };
+            Utils.el('#lda-btn-update').onclick = (e) => { e.stopPropagation(); this.checkUpdate({ isAuto: false, force: true }); };
             
             // 点击页面其他地方收起面板
             document.addEventListener('click', (e) => {
@@ -1200,6 +1205,13 @@
         markFetch(type) {
             this.lastFetch[type] = Date.now();
             Utils.set(CONFIG.KEYS.CACHE_META, this.lastFetch);
+        }
+
+        maybeAutoCheckUpdate() {
+            const now = Date.now();
+            const ONE_HOUR = 60 * 60 * 1000;
+            if (now - (this.lastSkipUpdate || 0) < ONE_HOUR) return;
+            this.checkUpdate({ isAuto: true });
         }
 
         async refreshTrust(arg = true) {
@@ -1874,12 +1886,19 @@
             this.dom.root.style.top = p.t + 'px';
         }
 
-        async checkUpdate() {
+        async checkUpdate(options = {}) {
+            const { isAuto = false, force = false } = options;
             const btn = Utils.el('#lda-btn-update', this.dom.root);
             const updateUrl = 'https://raw.githubusercontent.com/dongshuyan/Linuxdo-Assistant/main/Linuxdo-Assistant.user.js';
+            const now = Date.now();
+            const ONE_HOUR = 60 * 60 * 1000;
+
+            if (isAuto && !force) {
+                if (now - (this.lastSkipUpdate || 0) < ONE_HOUR) return;
+            }
             
-            if (btn.classList.contains('lda-spin')) return; // 防止重复点击
-            btn.classList.add('lda-spin');
+            if (btn?.classList.contains('lda-spin')) return; // 防止重复点击
+            btn?.classList.add('lda-spin');
             
             try {
                 const res = await Utils.request(updateUrl);
@@ -1891,17 +1910,19 @@
                 
                 if (this.compareVersion(remote, current) > 0) {
                     // 有新版本，显示提示
-                    this.showUpdateToast(remote, updateUrl);
-                } else {
+                    this.showUpdatePrompt(remote, updateUrl);
+                } else if (!isAuto) {
                     this.showToast(`✓ ${this.t('latest')} (v${current})`, 'success');
                 }
             } catch (e) {
-                this.showToast(this.t('update_err'), 'error');
+                if (!isAuto) this.showToast(this.t('update_err'), 'error');
             }
             
-            btn.classList.remove('lda-spin');
+            btn?.classList.remove('lda-spin');
+            Utils.set(CONFIG.KEYS.LAST_AUTO_CHECK, now);
+            this.lastAutoCheck = now;
         }
-        
+
         showToast(msg, type = 'info') {
             const host = this.dom?.panel || document.body;
             const toast = document.createElement('div');
@@ -1919,7 +1940,10 @@
 
         showConfirm(message, onOk) {
             const host = this.dom?.panel || document.body;
+            const existing = Utils.el('#lda-confirm-mask', host);
+            if (existing) existing.remove();
             const mask = document.createElement('div');
+            mask.id = 'lda-confirm-mask';
             mask.style.cssText = `
                 position:absolute; inset:0; background:rgba(0,0,0,0.15); z-index:1000000;
                 display:flex; align-items:center; justify-content:center;
@@ -1945,26 +1969,46 @@
             box.onclick = (e) => e.stopPropagation();
         }
         
-        showUpdateToast(version, url) {
-            const toast = document.createElement('div');
-            toast.style.cssText = `
-                position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-                padding: 12px 20px; border-radius: 8px; font-size: 13px; z-index: 999999;
-                background: var(--lda-bg, #fff); color: var(--lda-fg, #000);
-                border: 1px solid var(--lda-accent); box-shadow: 0 4px 16px rgba(0,0,0,0.15);
-                display: flex; align-items: center; gap: 12px;
-                animation: lda-fade 0.3s;
+        showUpdatePrompt(version, url) {
+            const host = this.dom?.panel || document.body;
+            const existing = Utils.el('#lda-update-mask', host);
+            if (existing) existing.remove();
+            const mask = document.createElement('div');
+            mask.id = 'lda-update-mask';
+            mask.style.cssText = `
+                position:absolute; inset:0; background:rgba(0,0,0,0.12); z-index:1000001;
+                display:flex; align-items:center; justify-content:center;
             `;
-            toast.innerHTML = `
-                <span style="color:var(--lda-accent);font-weight:600;">${this.t('new_version')} v${version}</span>
-                <a href="${url}" target="_blank" style="
-                    background:var(--lda-accent);color:#fff;padding:4px 12px;border-radius:6px;
-                    text-decoration:none;font-size:12px;font-weight:600;
-                ">更新</a>
-                <span style="cursor:pointer;opacity:0.5;font-size:18px;" onclick="this.parentElement.remove()">×</span>
+            const box = document.createElement('div');
+            box.style.cssText = `
+                background:var(--lda-bg); color:var(--lda-fg); border:1px solid var(--lda-border);
+                border-radius:12px; padding:16px 18px; min-width:260px; box-shadow:0 10px 30px rgba(0,0,0,0.25);
             `;
-            document.body.appendChild(toast);
-            setTimeout(() => toast.remove(), 8000);
+            box.innerHTML = `
+                <div style="font-size:14px;font-weight:700;margin-bottom:8px;color:var(--lda-accent);">发现新版本 v${version}</div>
+                <div style="font-size:12px;color:var(--lda-dim);margin-bottom:14px;">是否更新到最新版本？</div>
+                <div style="display:flex; gap:8px; justify-content:flex-end;">
+                    <button id="lda-update-skip" style="padding:8px 12px; border:1px solid var(--lda-border); background:var(--lda-bg); border-radius:8px; cursor:pointer;">暂不更新</button>
+                    <button id="lda-update-go" style="padding:8px 12px; border:none; background:var(--lda-accent); color:#fff; border-radius:8px; cursor:pointer;">立即更新</button>
+                </div>
+            `;
+            mask.appendChild(box);
+            host.appendChild(mask);
+            const dispose = () => mask.remove();
+            box.querySelector('#lda-update-go').onclick = (e) => { 
+                e.stopPropagation(); 
+                try { window.open(url, '_blank'); } catch(_) {}
+                dispose(); 
+            };
+            box.querySelector('#lda-update-skip').onclick = (e) => { 
+                e.stopPropagation(); 
+                const now = Date.now();
+                this.lastSkipUpdate = now;
+                Utils.set(CONFIG.KEYS.LAST_SKIP_UPDATE, now);
+                dispose(); 
+            };
+            mask.onclick = dispose;
+            box.onclick = (e) => e.stopPropagation();
         }
 
         compareVersion(v1, v2) {
