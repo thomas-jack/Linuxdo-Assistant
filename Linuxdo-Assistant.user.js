@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      1.1.0
+// @version      1.2.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -29,7 +29,10 @@
             CREDIT_INFO: 'https://credit.linux.do/api/v1/oauth/user-info',
             CREDIT_STATS: 'https://credit.linux.do/api/v1/dashboard/stats/daily?days=7',
             LINK_TRUST: 'https://connect.linux.do/',
-            LINK_CREDIT: 'https://credit.linux.do/home'
+            LINK_CREDIT: 'https://credit.linux.do/home',
+            LEADERBOARD: 'https://linux.do/leaderboard/1.json',
+            LEADERBOARD_DAILY: 'https://linux.do/leaderboard/1.json?period=daily',
+            LINK_LEADERBOARD: 'https://linux.do/leaderboard/1'
         },
         // 保持 v4 键名以维持配置
         KEYS: {
@@ -73,7 +76,10 @@
             checking: "检查中...",
             new_version: "发现新版本",
             latest: "已是最新",
-            update_err: "检查失败"
+            update_err: "检查失败",
+            rank: "排名",
+            rank_today: "今日",
+            score: "积分"
         },
         en: {
             title: "Linux.do HUD",
@@ -104,7 +110,10 @@
             checking: "Checking...",
             new_version: "New Version",
             latest: "Up to date",
-            update_err: "Check failed"
+            update_err: "Check failed",
+            rank: "Rank",
+            rank_today: "Today",
+            score: "Score"
         }
     };
 
@@ -126,6 +135,24 @@
         static html(strings, ...values) { return strings.reduce((r, s, i) => r + s + (values[i] || ''), ''); }
         static el(s, p = document) { return p.querySelector(s); }
         static els(s, p = document) { return p.querySelectorAll(s); }
+        
+        // 获取论坛排名数据
+        static async fetchForumStats() {
+            const fetchJson = (url) => fetch(url).then(r => r.json()).catch(() => null);
+            try {
+                const [daily, global] = await Promise.all([
+                    fetchJson(CONFIG.API.LEADERBOARD_DAILY),
+                    fetchJson(CONFIG.API.LEADERBOARD)
+                ]);
+                return {
+                    dailyRank: daily?.personal?.position || null,
+                    globalRank: global?.personal?.position || null,
+                    score: global?.personal?.score || null
+                };
+            } catch (e) {
+                return { dailyRank: null, globalRank: null, score: null };
+            }
+        }
     }
 
     // 样式
@@ -225,6 +252,18 @@
         }
         .lda-badge.ok { background: rgba(34, 197, 94, 0.1); color: var(--lda-green); }
         .lda-badge.no { background: rgba(239, 68, 68, 0.1); color: var(--lda-red); }
+
+        /* 排名统计栏 */
+        .lda-stats-bar {
+            display: flex; gap: 12px; margin-top: 10px; padding: 10px 12px;
+            background: rgba(125,125,125,0.05); border-radius: 8px; flex-wrap: wrap;
+        }
+        .lda-stats-bar a { text-decoration: none; color: inherit; }
+        .lda-stat-item { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--lda-dim); }
+        .lda-stat-item .num { font-weight: 700; font-size: 14px; }
+        .lda-stat-item .num.rank { color: #e74c3c; }
+        .lda-stat-item .num.today { color: #f39c12; }
+        .lda-stat-item .num.score { color: #27ae60; }
 
         /* 动作组容器 */
         .lda-actions-group {
@@ -464,7 +503,12 @@
             else wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
 
             try {
-                const html = await Utils.request(CONFIG.API.TRUST);
+                // 同时获取信任级别和排名数据
+                const [html, forumStats] = await Promise.all([
+                    Utils.request(CONFIG.API.TRUST),
+                    Utils.fetchForumStats()
+                ]);
+                
                 const doc = new DOMParser().parseFromString(html, 'text/html');
                 const levelNode = Array.from(doc.querySelectorAll('h2')).find(x => x.textContent.includes('信任级别'));
                 if (!levelNode) throw new Error("Need Login");
@@ -523,6 +567,16 @@
                 this.state.trustCache = newCache;
                 Utils.set(CONFIG.KEYS.CACHE_TRUST, newCache);
 
+                // 构建排名统计栏
+                let statsHtml = '';
+                if (forumStats.globalRank || forumStats.dailyRank || forumStats.score) {
+                    statsHtml = `<a href="${CONFIG.API.LINK_LEADERBOARD}" target="_blank" class="lda-stats-bar">`;
+                    if (forumStats.globalRank) statsHtml += `<span class="lda-stat-item">${this.t('rank')} <span class="num rank">#${forumStats.globalRank}</span></span>`;
+                    if (forumStats.dailyRank) statsHtml += `<span class="lda-stat-item">${this.t('rank_today')} <span class="num today">#${forumStats.dailyRank}</span></span>`;
+                    if (forumStats.score) statsHtml += `<span class="lda-stat-item">${this.t('score')} <span class="num score">${forumStats.score.toLocaleString()}</span></span>`;
+                    statsHtml += `</a>`;
+                }
+
                 wrap.innerHTML = Utils.html`
                     <div class="lda-card">
                         <div class="lda-actions-group">
@@ -539,6 +593,7 @@
                                 <span class="lda-badge ${isPass?'ok':'no'}">${isPass ? this.t('status_ok') : this.t('status_fail')}</span>
                             </div>
                         </div>
+                        ${statsHtml}
                         ${listHtml}
                     </div>
                 `;

@@ -94,6 +94,7 @@
 
 - [LinuxDoStatus](https://github.com/1e0n/LinuxDoStatus) - 信任级别显示脚本，提供了实现思路参考
 - [Linux.do 社区讨论](https://linux.do/t/topic/1356074) - 社区成员的需求反馈和建议
+- [Linux.do 顶部显示脚本](https://linux.do/t/topic/1357173) - 排名/积分数据获取方案参考
 - AI 辅助工具 - 协助完成部分代码编写
 
 ## 📄 许可证
