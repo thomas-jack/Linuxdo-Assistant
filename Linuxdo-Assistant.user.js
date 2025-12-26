@@ -48,7 +48,8 @@
             LANG: 'lda_v4_lang',
             CACHE_TRUST: 'lda_v4_cache_trust',
             TAB_ORDER: 'lda_v5_tab_order',
-            CACHE_CDK: 'lda_v5_cache_cdk'
+            CACHE_CDK: 'lda_v5_cache_cdk',
+            REFRESH_INTERVAL: 'lda_v5_refresh_interval'
         }
     };
     const AUTO_REFRESH_MS = 30 * 60 * 1000; // 半小时定时刷新
@@ -78,9 +79,15 @@
             set_auto: "自动展开面板",
             set_lang: "界面语言",
             set_size: "面板高度",
+            set_refresh: "自动刷新频率",
             size_sm: "标准",
             size_lg: "加高",
             size_auto: "自适应",
+            refresh_30: "30 分钟",
+            refresh_60: "1 小时",
+            refresh_120: "2 小时",
+            refresh_off: "关闭",
+            refresh_tip: "仅在面板展开时定时刷新",
             theme_tip: "点击切换：亮色 / 深色 / 跟随系统",
             link_tip: "前往网页版",
             refresh_tip: "刷新数据",
@@ -133,9 +140,15 @@
             set_auto: "Auto Expand",
             set_lang: "Language",
             set_size: "Panel Height",
+            set_refresh: "Auto Refresh",
             size_sm: "Small",
             size_lg: "Tall",
             size_auto: "Auto",
+            refresh_30: "30 min",
+            refresh_60: "1 hour",
+            refresh_120: "2 hours",
+            refresh_off: "Off",
+            refresh_tip: "Refresh periodically only when panel is open",
             theme_tip: "Toggle: Light / Dark / Auto",
             link_tip: "Open Website",
             refresh_tip: "Refresh",
@@ -472,7 +485,8 @@
                 height: Utils.get(CONFIG.KEYS.HEIGHT, 'auto'), // Default: Auto
                 expand: Utils.get(CONFIG.KEYS.EXPAND, true),   // Default: True
                 trustCache: Utils.get(CONFIG.KEYS.CACHE_TRUST, {}),
-                tabOrder: Utils.get(CONFIG.KEYS.TAB_ORDER, ['trust', 'credit', 'cdk']) // 标签顺序
+                tabOrder: Utils.get(CONFIG.KEYS.TAB_ORDER, ['trust', 'credit', 'cdk']), // 标签顺序
+                refreshInterval: Utils.get(CONFIG.KEYS.REFRESH_INTERVAL, 30) // 分钟，0 为关闭
             };
             this.cdkCache = Utils.get(CONFIG.KEYS.CACHE_CDK, null);
             this.focusFlags = { trust: false, credit: false, cdk: false };
@@ -563,7 +577,7 @@
         }
 
         renderSettings() {
-            const { lang, height, expand, tabOrder } = this.state;
+            const { lang, height, expand, tabOrder, refreshInterval } = this.state;
             const r = (val, cur) => val === cur ? 'active' : '';
             
             // 标签名称映射
@@ -603,6 +617,18 @@
                             <div class="lda-seg-item ${r('sm', height)}" data-v="sm">${this.t('size_sm')}</div>
                             <div class="lda-seg-item ${r('lg', height)}" data-v="lg">${this.t('size_lg')}</div>
                             <div class="lda-seg-item ${r('auto', height)}" data-v="auto">${this.t('size_auto')}</div>
+                        </div>
+                    </div>
+                    <div class="lda-opt">
+                        <div>
+                            <div class="lda-opt-label">${this.t('set_refresh')}</div>
+                            <div style="font-size:11px;color:var(--lda-dim);margin-top:4px;">${this.t('refresh_tip')}</div>
+                        </div>
+                        <div class="lda-seg" id="grp-refresh">
+                            <div class="lda-seg-item ${r(30, refreshInterval)}" data-v="30">${this.t('refresh_30')}</div>
+                            <div class="lda-seg-item ${r(60, refreshInterval)}" data-v="60">${this.t('refresh_60')}</div>
+                            <div class="lda-seg-item ${r(120, refreshInterval)}" data-v="120">${this.t('refresh_120')}</div>
+                            <div class="lda-seg-item ${r(0, refreshInterval)}" data-v="0">${this.t('refresh_off')}</div>
                         </div>
                     </div>
                     <div class="lda-opt" style="flex-direction:column; align-items:stretch;">
@@ -756,6 +782,13 @@
                     Utils.set(CONFIG.KEYS.HEIGHT, this.state.height);
                     this.applyHeight();
                     this.renderSettings();
+                }
+                const refreshNode = e.target.closest('#grp-refresh .lda-seg-item');
+                if (refreshNode) {
+                    this.state.refreshInterval = Number(refreshNode.dataset.v);
+                    Utils.set(CONFIG.KEYS.REFRESH_INTERVAL, this.state.refreshInterval);
+                    this.renderSettings();
+                    this.startAutoRefreshTimer();
                 }
                 if(e.target.id === 'inp-expand') {
                     this.state.expand = e.target.checked;
@@ -1074,12 +1107,20 @@
         }
 
         startAutoRefreshTimer() {
+            if (this.autoRefreshTimer) {
+                clearInterval(this.autoRefreshTimer);
+                this.autoRefreshTimer = null;
+            }
+            const minutesRaw = Number(this.state.refreshInterval);
+            const minutes = Number.isFinite(minutesRaw) ? minutesRaw : 30;
+            if (minutes <= 0) return;
+            const interval = minutes * 60 * 1000;
             this.autoRefreshTimer = setInterval(() => {
                 if (this.dom.panel.style.display !== 'flex') return;
                 this.refreshTrust(false);
                 this.refreshCredit(false);
                 this.refreshCDK();
-            }, AUTO_REFRESH_MS);
+            }, interval || AUTO_REFRESH_MS);
         }
 
         async fetchCDKDirect() {
