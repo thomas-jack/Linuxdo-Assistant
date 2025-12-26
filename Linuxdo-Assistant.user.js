@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      1.5.1
+// @version      1.6.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -302,6 +302,7 @@
             --lda-border: 1px solid rgba(0,0,0,0.08);
             --lda-shadow: 0 12px 30px -4px rgba(0, 0, 0, 0.12);
             --lda-accent: #3b82f6;
+            --lda-ball-ring: rgba(0,0,0,0.08);
             --lda-rad: 12px;
             --lda-z: 99999;
             --lda-red: #ef4444;
@@ -315,6 +316,7 @@
             --lda-border: 1px solid rgba(255,255,255,0.08);
             --lda-shadow: 0 12px 30px -4px rgba(0, 0, 0, 0.6);
             --lda-accent: #38bdf8;
+            --lda-ball-ring: rgba(255,255,255,0.15);
         }
 
         #lda-root { position: fixed; z-index: var(--lda-z); font-family: var(--lda-font); font-size: 14px; user-select: none; color: var(--lda-fg); min-width: 44px; min-height: 44px; }
@@ -322,7 +324,9 @@
         /* 悬浮球 */
         .lda-ball {
             width: 44px; height: 44px; background: var(--lda-accent); border-radius: 50%;
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4); cursor: grab;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4), 0 0 0 2px var(--lda-ball-ring);
+            border: 2px solid var(--lda-ball-ring);
+            cursor: grab;
             display: flex; align-items: center; justify-content: center; color: #fff;
             transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s;
         }
