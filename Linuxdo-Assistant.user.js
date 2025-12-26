@@ -915,7 +915,7 @@
             }
         }
 
-        async refreshCredit() {
+        async refreshCredit(autoRetry = true) {
             const wrap = this.dom.credit;
             const existingBtn = Utils.el('#btn-re-credit', wrap);
             if(existingBtn) existingBtn.classList.add('loading');
@@ -960,22 +960,38 @@
                         ${listHtml}
                     </div>
                 `;
-                Utils.el('#btn-re-credit', wrap).onclick = () => this.refreshCredit();
+                Utils.el('#btn-re-credit', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCredit(); };
             } catch(e) {
-                wrap.innerHTML = `
-                    <div class="lda-card lda-auth-card">
-                        <div class="lda-auth-icon">
-                            <svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" d="M12,1L3,5V11C3,16.55 6.84,21.74 12,23C17.16,21.74 21,16.55 21,11V5L12,1M12,5A3,3 0 0,1 15,8A3,3 0 0,1 12,11A3,3 0 0,1 9,8A3,3 0 0,1 12,5M17.13,17C15.92,18.85 14.11,20.24 12,20.92C9.89,20.24 8.08,18.85 6.87,17C6.53,16.5 6.24,16 6,15.47C6,13.82 8.71,12.47 12,12.47C15.29,12.47 18,13.79 18,15.47C17.76,16 17.47,16.5 17.13,17Z"/></svg>
+                const isLogin = e?.status === 401 || /unauthorized|not\s*login/i.test(e?.responseText || '');
+
+                if (autoRetry && !isLogin) {
+                    if (existingBtn) existingBtn.classList.remove('loading');
+                    setTimeout(() => this.refreshCredit(false), 200);
+                    return;
+                }
+
+                if (isLogin) {
+                    if (existingBtn) existingBtn.classList.remove('loading');
+                    wrap.innerHTML = `
+                        <div class="lda-card lda-auth-card">
+                            <div class="lda-auth-icon">
+                                <svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" d="M12,1L3,5V11C3,16.55 6.84,21.74 12,23C17.16,21.74 21,16.55 21,11V5L12,1M12,5A3,3 0 0,1 15,8A3,3 0 0,1 12,11A3,3 0 0,1 9,8A3,3 0 0,1 12,5M17.13,17C15.92,18.85 14.11,20.24 12,20.92C9.89,20.24 8.08,18.85 6.87,17C6.53,16.5 6.24,16 6,15.47C6,13.82 8.71,12.47 12,12.47C15.29,12.47 18,13.79 18,15.47C17.76,16 17.47,16.5 17.13,17Z"/></svg>
+                            </div>
+                            <div class="lda-auth-title">${this.t('credit_not_auth')}</div>
+                            <div class="lda-auth-tip">${this.t('credit_auth_tip')}</div>
+                            <div class="lda-auth-btns">
+                                <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-auth-btn">${this.t('credit_go_auth')} →</a>
+                                <button id="btn-credit-refresh" class="lda-auth-btn secondary">${this.t('credit_refresh')}</button>
+                            </div>
                         </div>
-                        <div class="lda-auth-title">${this.t('credit_not_auth')}</div>
-                        <div class="lda-auth-tip">${this.t('credit_auth_tip')}</div>
-                        <div class="lda-auth-btns">
-                            <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-auth-btn">${this.t('credit_go_auth')} →</a>
-                            <button id="btn-credit-refresh" class="lda-auth-btn secondary">${this.t('credit_refresh')}</button>
-                        </div>
-                    </div>
-                `;
-                Utils.el('#btn-credit-refresh', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCredit(); };
+                    `;
+                    Utils.el('#btn-credit-refresh', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshCredit(); };
+                    return;
+                }
+
+                wrap.innerHTML = `<div class="lda-card" style="text-align:center;color:var(--lda-red)">${this.t('connect_err')}<br><button id="retry-credit" style="margin-top:8px;padding:4px 12px;">Retry</button></div>`;
+                Utils.el('#retry-credit', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshCredit(); };
+                if (existingBtn) existingBtn.classList.remove('loading');
             }
         }
 
@@ -1118,7 +1134,7 @@
                     </div>
                 </div>
             `;
-            Utils.el('#btn-re-cdk', wrap).onclick = () => this.refreshCDK();
+            Utils.el('#btn-re-cdk', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCDK(); };
         }
 
         renderCDKAuth() {
@@ -1142,11 +1158,16 @@
         togglePanel(show) {
             this.dom.ball.style.display = show ? 'none' : 'flex';
             this.dom.panel.style.display = show ? 'flex' : 'none';
-            if (show && !this.dom.panel.dataset.loaded) {
-                this.refreshTrust();
-                this.refreshCredit();
-                this.refreshCDK();
-                this.dom.panel.dataset.loaded = '1';
+            if (show) {
+                const needTrust = !this.dom.trust.querySelector('.lda-card');
+                const needCredit = !this.dom.credit.querySelector('.lda-card');
+                const needCDK = !this.dom.cdk.querySelector('.lda-card');
+                if (!this.dom.panel.dataset.loaded || needTrust || needCredit || needCDK) {
+                    this.refreshTrust();
+                    this.refreshCredit();
+                    this.refreshCDK();
+                    this.dom.panel.dataset.loaded = '1';
+                }
             }
             if (show) this.updatePanelSide();
         }
