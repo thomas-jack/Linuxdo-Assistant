@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      1.3.0
-// @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看
+// @version      1.3.1
+// @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
 // @grant        GM_xmlhttpRequest
@@ -12,6 +12,7 @@
 // @grant        GM_info
 // @connect      connect.linux.do
 // @connect      credit.linux.do
+// @connect      cdk.linux.do
 // @connect      raw.githubusercontent.com
 // @run-at       document-idle
 // @license      MIT
@@ -32,7 +33,9 @@
             LINK_CREDIT: 'https://credit.linux.do/home',
             LEADERBOARD: 'https://linux.do/leaderboard/1.json',
             LEADERBOARD_DAILY: 'https://linux.do/leaderboard/1.json?period=daily',
-            LINK_LEADERBOARD: 'https://linux.do/leaderboard/1'
+            LINK_LEADERBOARD: 'https://linux.do/leaderboard/1',
+            CDK_INFO: 'https://cdk.linux.do/api/v1/oauth/user-info',
+            LINK_CDK: 'https://cdk.linux.do/dashboard'
         },
         // 保持 v4 键名以维持配置
         KEYS: {
@@ -52,6 +55,7 @@
             title: "Linux.do 仪表盘",
             tab_trust: "信任级别",
             tab_credit: "积分详情",
+            tab_cdk: "社区分数",
             tab_setting: "偏好设置",
             loading: "数据加载中...",
             connect_err: "连接失败或未登录",
@@ -87,12 +91,22 @@
             credit_refresh: "刷新",
             set_first_tab: "首页标签",
             tab_trust_first: "信任级别",
-            tab_credit_first: "积分详情"
+            tab_credit_first: "积分详情",
+            cdk_score: "社区分数",
+            cdk_trust_level: "信任等级",
+            cdk_username: "用户名",
+            cdk_nickname: "昵称",
+            cdk_not_auth: "尚未登录 CDK",
+            cdk_auth_tip: "需先完成授权才能查看社区分数",
+            cdk_go_auth: "前往登录",
+            cdk_refresh: "刷新",
+            cdk_score_desc: "基于徽章计算的社区信誉分"
         },
         en: {
             title: "Linux.do HUD",
             tab_trust: "Trust Level",
             tab_credit: "Credits",
+            tab_cdk: "CDK Score",
             tab_setting: "Settings",
             loading: "Loading...",
             connect_err: "Connection Error / Not Logged In",
@@ -128,7 +142,16 @@
             credit_refresh: "Refresh",
             set_first_tab: "Default Tab",
             tab_trust_first: "Trust Level",
-            tab_credit_first: "Credits"
+            tab_credit_first: "Credits",
+            cdk_score: "Community Score",
+            cdk_trust_level: "Trust Level",
+            cdk_username: "Username",
+            cdk_nickname: "Nickname",
+            cdk_not_auth: "CDK Not Logged In",
+            cdk_auth_tip: "Please authorize to view CDK score",
+            cdk_go_auth: "Go to Login",
+            cdk_refresh: "Refresh",
+            cdk_score_desc: "Community reputation based on badges"
         }
     };
 
@@ -419,11 +442,13 @@
                     <div class="lda-tabs">
                         <div class="lda-tab active" data-target="${tab1.key}">${tab1.label}</div>
                         <div class="lda-tab" data-target="${tab2.key}">${tab2.label}</div>
+                        <div class="lda-tab" data-target="cdk">${this.t('tab_cdk')}</div>
                         <div class="lda-tab" data-target="setting">${this.t('tab_setting')}</div>
                     </div>
                     <div class="lda-body">
                         <div id="page-${tab1.key}" class="lda-page active"></div>
                         <div id="page-${tab2.key}" class="lda-page"></div>
+                        <div id="page-cdk" class="lda-page"></div>
                         <div id="page-setting" class="lda-page"></div>
                     </div>
                 </div>
@@ -436,6 +461,7 @@
                 panel: Utils.el('.lda-panel', root),
                 trust: Utils.el('#page-trust', root),
                 credit: Utils.el('#page-credit', root),
+                cdk: Utils.el('#page-cdk', root),
                 setting: Utils.el('#page-setting', root),
                 themeBtn: Utils.el('#lda-btn-theme', root),
                 tabs: Utils.els('.lda-tab', root),
@@ -549,10 +575,11 @@
                 this.updateThemeIcon();
             };
 
-            // 窗口获得焦点时自动刷新 Credit（用户授权后回来）
+            // 窗口获得焦点时自动刷新 Credit 和 CDK（用户授权后回来）
             window.addEventListener('focus', () => {
                 if (this.dom.panel.style.display === 'flex') {
                     this.refreshCredit();
+                    this.refreshCDK();
                 }
             });
 
@@ -733,12 +760,84 @@
             }
         }
 
+        async refreshCDK() {
+            const wrap = this.dom.cdk;
+            const existingBtn = Utils.el('#btn-re-cdk', wrap);
+            if(existingBtn) existingBtn.classList.add('loading');
+            else wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+
+            try {
+                const infoRes = await Utils.request(CONFIG.API.CDK_INFO, { withCredentials: true });
+                const info = JSON.parse(infoRes).data;
+                
+                // 信任等级映射
+                const trustLevelNames = {
+                    0: { zh: '新用户', en: 'New User' },
+                    1: { zh: '基本用户', en: 'Basic User' },
+                    2: { zh: '成员', en: 'Member' },
+                    3: { zh: '活跃用户', en: 'Regular' },
+                    4: { zh: '领导者', en: 'Leader' }
+                };
+                const trustName = trustLevelNames[info.trust_level]?.[this.state.lang] || `Lv.${info.trust_level}`;
+
+                wrap.innerHTML = Utils.html`
+                    <div class="lda-card">
+                        <div class="lda-actions-group">
+                            <a href="${CONFIG.API.LINK_CDK}" target="_blank" class="lda-act-btn" title="${this.t('link_tip')}">
+                                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+                            </a>
+                            <div class="lda-act-btn" id="btn-re-cdk" title="${this.t('refresh_tip')}">
+                                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
+                            </div>
+                        </div>
+                        <div class="lda-credit-hero">
+                            <div class="lda-credit-num" style="color:var(--lda-accent)">${info.score}</div>
+                            <div class="lda-credit-label">${this.t('cdk_score')}</div>
+                            <div style="margin-top:4px;font-size:11px;color:var(--lda-dim)">${this.t('cdk_score_desc')}</div>
+                        </div>
+                    </div>
+                    <div class="lda-card">
+                        <div style="font-size:11px;font-weight:700;color:var(--lda-dim);margin-bottom:10px;">用户信息</div>
+                        <div class="lda-row-rec">
+                            <span>${this.t('cdk_username')}</span>
+                            <span class="lda-amt" style="color:var(--lda-fg)">${info.username}</span>
+                        </div>
+                        <div class="lda-row-rec">
+                            <span>${this.t('cdk_nickname')}</span>
+                            <span class="lda-amt" style="color:var(--lda-fg)">${info.nickname || '-'}</span>
+                        </div>
+                        <div class="lda-row-rec">
+                            <span>${this.t('cdk_trust_level')}</span>
+                            <span class="lda-amt" style="color:var(--lda-accent)">${trustName}</span>
+                        </div>
+                    </div>
+                `;
+                Utils.el('#btn-re-cdk', wrap).onclick = () => this.refreshCDK();
+            } catch(e) {
+                wrap.innerHTML = `
+                    <div class="lda-card lda-auth-card">
+                        <div class="lda-auth-icon">
+                            <svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" d="M12,1L3,5V11C3,16.55 6.84,21.74 12,23C17.16,21.74 21,16.55 21,11V5L12,1M12,5A3,3 0 0,1 15,8A3,3 0 0,1 12,11A3,3 0 0,1 9,8A3,3 0 0,1 12,5M17.13,17C15.92,18.85 14.11,20.24 12,20.92C9.89,20.24 8.08,18.85 6.87,17C6.53,16.5 6.24,16 6,15.47C6,13.82 8.71,12.47 12,12.47C15.29,12.47 18,13.79 18,15.47C17.76,16 17.47,16.5 17.13,17Z"/></svg>
+                        </div>
+                        <div class="lda-auth-title">${this.t('cdk_not_auth')}</div>
+                        <div class="lda-auth-tip">${this.t('cdk_auth_tip')}</div>
+                        <div class="lda-auth-btns">
+                            <a href="${CONFIG.API.LINK_CDK}" target="_blank" class="lda-auth-btn">${this.t('cdk_go_auth')} →</a>
+                            <button id="btn-cdk-refresh" class="lda-auth-btn secondary">${this.t('cdk_refresh')}</button>
+                        </div>
+                    </div>
+                `;
+                Utils.el('#btn-cdk-refresh', wrap).onclick = () => this.refreshCDK();
+            }
+        }
+
         togglePanel(show) {
             this.dom.ball.style.display = show ? 'none' : 'flex';
             this.dom.panel.style.display = show ? 'flex' : 'none';
             if (show && !this.dom.panel.dataset.loaded) {
                 this.refreshTrust();
                 this.refreshCredit();
+                this.refreshCDK();
                 this.dom.panel.dataset.loaded = '1';
             }
         }
