@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      1.2.3
+// @version      1.3.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -41,7 +41,8 @@
             EXPAND: 'lda_v4_expand',
             HEIGHT: 'lda_v4_height',
             LANG: 'lda_v4_lang',
-            CACHE_TRUST: 'lda_v4_cache_trust' 
+            CACHE_TRUST: 'lda_v4_cache_trust',
+            FIRST_TAB: 'lda_v4_first_tab'
         }
     };
 
@@ -82,7 +83,11 @@
             score: "积分",
             credit_not_auth: "尚未登录 Credit",
             credit_auth_tip: "需先完成授权才能查看积分数据",
-            credit_go_auth: "前往登录"
+            credit_go_auth: "前往登录",
+            credit_refresh: "刷新",
+            set_first_tab: "首页标签",
+            tab_trust_first: "信任级别",
+            tab_credit_first: "积分详情"
         },
         en: {
             title: "Linux.do HUD",
@@ -119,7 +124,11 @@
             score: "Score",
             credit_not_auth: "Credit Not Logged In",
             credit_auth_tip: "Please authorize to view credit data",
-            credit_go_auth: "Go to Login"
+            credit_go_auth: "Go to Login",
+            credit_refresh: "Refresh",
+            set_first_tab: "Default Tab",
+            tab_trust_first: "Trust Level",
+            tab_credit_first: "Credits"
         }
     };
 
@@ -328,12 +337,15 @@
         .lda-auth-icon { color: var(--lda-dim); opacity: 0.5; margin-bottom: 12px; }
         .lda-auth-title { font-size: 15px; font-weight: 600; color: var(--lda-fg); margin-bottom: 6px; }
         .lda-auth-tip { font-size: 12px; color: var(--lda-dim); margin-bottom: 16px; }
+        .lda-auth-btns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
         .lda-auth-btn {
-            display: inline-block; padding: 10px 24px; background: var(--lda-accent); color: #fff;
+            display: inline-block; padding: 10px 20px; background: var(--lda-accent); color: #fff;
             border-radius: 8px; font-size: 13px; font-weight: 600; text-decoration: none;
-            transition: all 0.2s; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+            transition: all 0.2s; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3); border: none; cursor: pointer;
         }
         .lda-auth-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4); }
+        .lda-auth-btn.secondary { background: rgba(125,125,125,0.15); color: var(--lda-fg); box-shadow: none; }
+        .lda-auth-btn.secondary:hover { background: rgba(125,125,125,0.25); transform: none; }
         .lda-row-rec:last-child { border: none; }
         .lda-amt { font-weight: 600; font-family: monospace; }
 
@@ -365,7 +377,8 @@
                 theme: Utils.get(CONFIG.KEYS.THEME, 'auto'), 
                 height: Utils.get(CONFIG.KEYS.HEIGHT, 'auto'), // Default: Auto
                 expand: Utils.get(CONFIG.KEYS.EXPAND, true),   // Default: True
-                trustCache: Utils.get(CONFIG.KEYS.CACHE_TRUST, {})
+                trustCache: Utils.get(CONFIG.KEYS.CACHE_TRUST, {}),
+                firstTab: Utils.get(CONFIG.KEYS.FIRST_TAB, 'trust') // trust 或 credit
             };
             this.dom = {};
         }
@@ -388,6 +401,9 @@
         renderLayout() {
             const root = document.createElement('div');
             root.id = 'lda-root';
+            const isCreditFirst = this.state.firstTab === 'credit';
+            const tab1 = isCreditFirst ? { key: 'credit', label: this.t('tab_credit') } : { key: 'trust', label: this.t('tab_trust') };
+            const tab2 = isCreditFirst ? { key: 'trust', label: this.t('tab_trust') } : { key: 'credit', label: this.t('tab_credit') };
             root.innerHTML = Utils.html`
                 <div class="lda-ball" title="${this.t('title')}">
                     <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
@@ -401,13 +417,13 @@
                         </div>
                     </div>
                     <div class="lda-tabs">
-                        <div class="lda-tab active" data-target="trust">${this.t('tab_trust')}</div>
-                        <div class="lda-tab" data-target="credit">${this.t('tab_credit')}</div>
+                        <div class="lda-tab active" data-target="${tab1.key}">${tab1.label}</div>
+                        <div class="lda-tab" data-target="${tab2.key}">${tab2.label}</div>
                         <div class="lda-tab" data-target="setting">${this.t('tab_setting')}</div>
                     </div>
                     <div class="lda-body">
-                        <div id="page-trust" class="lda-page active"></div>
-                        <div id="page-credit" class="lda-page"></div>
+                        <div id="page-${tab1.key}" class="lda-page active"></div>
+                        <div id="page-${tab2.key}" class="lda-page"></div>
                         <div id="page-setting" class="lda-page"></div>
                     </div>
                 </div>
@@ -453,6 +469,13 @@
                             <div class="lda-seg-item ${r('sm', height)}" data-v="sm">${this.t('size_sm')}</div>
                             <div class="lda-seg-item ${r('lg', height)}" data-v="lg">${this.t('size_lg')}</div>
                             <div class="lda-seg-item ${r('auto', height)}" data-v="auto">${this.t('size_auto')}</div>
+                        </div>
+                    </div>
+                    <div class="lda-opt">
+                        <div class="lda-opt-label">${this.t('set_first_tab')}</div>
+                        <div class="lda-seg" id="grp-tab">
+                            <div class="lda-seg-item ${r('trust', this.state.firstTab)}" data-v="trust">${this.t('tab_trust_first')}</div>
+                            <div class="lda-seg-item ${r('credit', this.state.firstTab)}" data-v="credit">${this.t('tab_credit_first')}</div>
                         </div>
                     </div>
                 </div>
@@ -505,6 +528,13 @@
                     this.applyHeight();
                     this.renderSettings();
                 }
+                const tabNode = e.target.closest('#grp-tab .lda-seg-item');
+                if (tabNode && tabNode.dataset.v !== this.state.firstTab) {
+                    this.state.firstTab = tabNode.dataset.v;
+                    Utils.set(CONFIG.KEYS.FIRST_TAB, this.state.firstTab);
+                    this.dom.root.remove();
+                    this.init(); // 重新渲染以应用新顺序
+                }
                 if(e.target.id === 'inp-expand') {
                     this.state.expand = e.target.checked;
                     Utils.set(CONFIG.KEYS.EXPAND, e.target.checked);
@@ -518,6 +548,13 @@
                 this.applyTheme();
                 this.updateThemeIcon();
             };
+
+            // 窗口获得焦点时自动刷新 Credit（用户授权后回来）
+            window.addEventListener('focus', () => {
+                if (this.dom.panel.style.display === 'flex') {
+                    this.refreshCredit();
+                }
+            });
 
             this.initDrag();
         }
@@ -686,9 +723,13 @@
                         </div>
                         <div class="lda-auth-title">${this.t('credit_not_auth')}</div>
                         <div class="lda-auth-tip">${this.t('credit_auth_tip')}</div>
-                        <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-auth-btn">${this.t('credit_go_auth')} →</a>
+                        <div class="lda-auth-btns">
+                            <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-auth-btn">${this.t('credit_go_auth')} →</a>
+                            <button id="btn-credit-refresh" class="lda-auth-btn secondary">${this.t('credit_refresh')}</button>
+                        </div>
                     </div>
                 `;
+                Utils.el('#btn-credit-refresh', wrap).onclick = () => this.refreshCredit();
             }
         }
 
