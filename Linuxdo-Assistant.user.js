@@ -481,7 +481,7 @@
             this.dom = {};
         }
 
-        async init() {
+        async init(forceOpen = false) {
             GM_addStyle(Styles);
             this.renderLayout();
             this.bindGlobalEvents();
@@ -490,7 +490,7 @@
             this.restorePos();
             this.updatePanelSide();
             
-            if (this.state.expand) {
+            if (this.state.expand || forceOpen) {
                 this.togglePanel(true);
             }
         }
@@ -691,7 +691,9 @@
             });
             
             // 保存按钮
-            saveBtn.onclick = () => {
+            saveBtn.onclick = (e) => {
+                e.stopPropagation();
+                const wasOpen = this.dom.panel.style.display === 'flex';
                 const items = container.querySelectorAll('.lda-sort-item');
                 const newOrder = [...items].map(item => item.dataset.key);
                 this.state.tabOrder = newOrder;
@@ -707,7 +709,7 @@
                 
                 // 重新渲染应用新顺序
                 this.dom.root.remove();
-                this.init();
+                this.init(wasOpen);
             };
         }
 
@@ -730,12 +732,15 @@
             });
 
             this.dom.setting.onclick = (e) => {
+                e.stopPropagation();
+                const wasOpen = this.dom.panel.style.display === 'flex';
                 const langNode = e.target.closest('#grp-lang .lda-seg-item');
                 if (langNode && langNode.dataset.v !== this.state.lang) {
                     this.state.lang = langNode.dataset.v;
                     Utils.set(CONFIG.KEYS.LANG, this.state.lang);
                     this.dom.root.remove();
-                    this.init(); 
+                    this.init(wasOpen); 
+                    return;
                 }
                 const sizeNode = e.target.closest('#grp-size .lda-seg-item');
                 if (sizeNode) {
@@ -748,14 +753,18 @@
                     this.state.expand = e.target.checked;
                     Utils.set(CONFIG.KEYS.EXPAND, e.target.checked);
                 }
+                if (wasOpen) this.togglePanel(true);
             };
 
-            this.dom.themeBtn.onclick = () => {
+            this.dom.themeBtn.onclick = (e) => {
+                e.stopPropagation();
+                const wasOpen = this.dom.panel.style.display === 'flex';
                 const modes = ['auto', 'light', 'dark'];
                 this.state.theme = modes[(modes.indexOf(this.state.theme) + 1) % 3];
                 Utils.set(CONFIG.KEYS.THEME, this.state.theme);
                 this.applyTheme();
                 this.updateThemeIcon();
+                if (wasOpen) this.togglePanel(true);
             };
 
             // 窗口获得焦点时自动刷新 Credit 和 CDK（用户授权后回来）
