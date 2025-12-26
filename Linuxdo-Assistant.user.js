@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      1.3.1
+// @version      1.3.2
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -55,7 +55,7 @@
             title: "Linux.do 仪表盘",
             tab_trust: "信任级别",
             tab_credit: "积分详情",
-            tab_cdk: "社区分数",
+            tab_cdk: "CDK分数",
             tab_setting: "偏好设置",
             loading: "数据加载中...",
             connect_err: "连接失败或未登录",
@@ -92,7 +92,8 @@
             set_first_tab: "首页标签",
             tab_trust_first: "信任级别",
             tab_credit_first: "积分详情",
-            cdk_score: "社区分数",
+            tab_cdk_first: "CDK分数",
+            cdk_score: "CDK分数",
             cdk_trust_level: "信任等级",
             cdk_username: "用户名",
             cdk_nickname: "昵称",
@@ -143,7 +144,8 @@
             set_first_tab: "Default Tab",
             tab_trust_first: "Trust Level",
             tab_credit_first: "Credits",
-            cdk_score: "Community Score",
+            tab_cdk_first: "CDK Score",
+            cdk_score: "CDK Score",
             cdk_trust_level: "Trust Level",
             cdk_username: "Username",
             cdk_nickname: "Nickname",
@@ -424,9 +426,18 @@
         renderLayout() {
             const root = document.createElement('div');
             root.id = 'lda-root';
-            const isCreditFirst = this.state.firstTab === 'credit';
-            const tab1 = isCreditFirst ? { key: 'credit', label: this.t('tab_credit') } : { key: 'trust', label: this.t('tab_trust') };
-            const tab2 = isCreditFirst ? { key: 'trust', label: this.t('tab_trust') } : { key: 'credit', label: this.t('tab_credit') };
+            // 定义所有标签
+            const allTabs = [
+                { key: 'trust', label: this.t('tab_trust') },
+                { key: 'credit', label: this.t('tab_credit') },
+                { key: 'cdk', label: this.t('tab_cdk') }
+            ];
+            // 根据 firstTab 设置排序（选中的放第一个）
+            const firstTab = this.state.firstTab;
+            const orderedTabs = [
+                allTabs.find(t => t.key === firstTab) || allTabs[0],
+                ...allTabs.filter(t => t.key !== firstTab)
+            ];
             root.innerHTML = Utils.html`
                 <div class="lda-ball" title="${this.t('title')}">
                     <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
@@ -440,15 +451,15 @@
                         </div>
                     </div>
                     <div class="lda-tabs">
-                        <div class="lda-tab active" data-target="${tab1.key}">${tab1.label}</div>
-                        <div class="lda-tab" data-target="${tab2.key}">${tab2.label}</div>
-                        <div class="lda-tab" data-target="cdk">${this.t('tab_cdk')}</div>
+                        <div class="lda-tab active" data-target="${orderedTabs[0].key}">${orderedTabs[0].label}</div>
+                        <div class="lda-tab" data-target="${orderedTabs[1].key}">${orderedTabs[1].label}</div>
+                        <div class="lda-tab" data-target="${orderedTabs[2].key}">${orderedTabs[2].label}</div>
                         <div class="lda-tab" data-target="setting">${this.t('tab_setting')}</div>
                     </div>
                     <div class="lda-body">
-                        <div id="page-${tab1.key}" class="lda-page active"></div>
-                        <div id="page-${tab2.key}" class="lda-page"></div>
-                        <div id="page-cdk" class="lda-page"></div>
+                        <div id="page-${orderedTabs[0].key}" class="lda-page active"></div>
+                        <div id="page-${orderedTabs[1].key}" class="lda-page"></div>
+                        <div id="page-${orderedTabs[2].key}" class="lda-page"></div>
                         <div id="page-setting" class="lda-page"></div>
                     </div>
                 </div>
@@ -502,6 +513,7 @@
                         <div class="lda-seg" id="grp-tab">
                             <div class="lda-seg-item ${r('trust', this.state.firstTab)}" data-v="trust">${this.t('tab_trust_first')}</div>
                             <div class="lda-seg-item ${r('credit', this.state.firstTab)}" data-v="credit">${this.t('tab_credit_first')}</div>
+                            <div class="lda-seg-item ${r('cdk', this.state.firstTab)}" data-v="cdk">${this.t('tab_cdk_first')}</div>
                         </div>
                     </div>
                 </div>
