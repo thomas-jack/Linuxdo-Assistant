@@ -9,10 +9,14 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addStyle
+// @grant        GM_info
 // @connect      connect.linux.do
 // @connect      credit.linux.do
+// @connect      raw.githubusercontent.com
 // @run-at       document-idle
 // @license      MIT
+// @updateURL    https://raw.githubusercontent.com/dongshuyan/Linuxdo-Assistant/main/Linuxdo-Assistant.user.js
+// @downloadURL  https://raw.githubusercontent.com/dongshuyan/Linuxdo-Assistant/main/Linuxdo-Assistant.user.js
 // ==/UserScript==
 
 (function () {
@@ -64,7 +68,12 @@
             size_auto: "自适应",
             theme_tip: "点击切换：亮色 / 深色 / 跟随系统",
             link_tip: "前往网页版",
-            refresh_tip: "刷新数据"
+            refresh_tip: "刷新数据",
+            check_update: "检查更新",
+            checking: "检查中...",
+            new_version: "发现新版本",
+            latest: "已是最新",
+            update_err: "检查失败"
         },
         en: {
             title: "Linux.do HUD",
@@ -90,7 +99,12 @@
             size_auto: "Auto",
             theme_tip: "Toggle: Light / Dark / Auto",
             link_tip: "Open Website",
-            refresh_tip: "Refresh"
+            refresh_tip: "Refresh",
+            check_update: "Check Update",
+            checking: "Checking...",
+            new_version: "New Version",
+            latest: "Up to date",
+            update_err: "Check failed"
         }
     };
 
@@ -375,10 +389,20 @@
                         </div>
                     </div>
                 </div>
-                <div style="text-align:center; font-size:10px; color:var(--lda-dim); margin-top:16px; opacity:0.6;">
-                    Ver 1.0.0 &bull; By Sauterne@Linux.do
+                <div style="text-align:center; margin-top:16px;">
+                    <div style="font-size:10px; color:var(--lda-dim); opacity:0.6; margin-bottom:8px;">
+                        v${GM_info.script.version} &bull; By Sauterne@Linux.do
+                    </div>
+                    <button id="btn-check-update" style="
+                        padding: 6px 14px; font-size: 11px; cursor: pointer;
+                        background: var(--lda-accent); color: #fff; border: none; border-radius: 6px;
+                        transition: opacity 0.2s;
+                    ">${this.t('check_update')}</button>
+                    <div id="update-status" style="font-size:11px; margin-top:6px; min-height:16px;"></div>
                 </div>
             `;
+            
+            Utils.el('#btn-check-update', this.dom.setting).onclick = () => this.checkUpdate();
         }
 
         bindGlobalEvents() {
@@ -635,6 +659,50 @@
             const p = Utils.get(CONFIG.KEYS.POS, { r: 20, t: 100 });
             this.dom.root.style.right = p.r + 'px';
             this.dom.root.style.top = p.t + 'px';
+        }
+
+        async checkUpdate() {
+            const btn = Utils.el('#btn-check-update', this.dom.setting);
+            const status = Utils.el('#update-status', this.dom.setting);
+            const updateUrl = 'https://raw.githubusercontent.com/dongshuyan/Linuxdo-Assistant/main/Linuxdo-Assistant.user.js';
+            
+            btn.disabled = true;
+            btn.style.opacity = '0.6';
+            status.innerHTML = `<span style="color:var(--lda-dim)">${this.t('checking')}</span>`;
+            
+            try {
+                const res = await Utils.request(updateUrl);
+                const match = res.match(/@version\s+([\d.]+)/);
+                if (!match) throw new Error('Parse error');
+                
+                const remote = match[1];
+                const current = GM_info.script.version;
+                
+                if (this.compareVersion(remote, current) > 0) {
+                    status.innerHTML = `<span style="color:var(--lda-accent)">${this.t('new_version')} v${remote}</span>
+                        <a href="${updateUrl}" target="_blank" style="color:var(--lda-accent);margin-left:6px;text-decoration:underline;">更新</a>`;
+                } else {
+                    status.innerHTML = `<span style="color:var(--lda-green)">✓ ${this.t('latest')}</span>`;
+                    setTimeout(() => { status.innerHTML = ''; }, 3000);
+                }
+            } catch (e) {
+                status.innerHTML = `<span style="color:var(--lda-red)">${this.t('update_err')}</span>`;
+                setTimeout(() => { status.innerHTML = ''; }, 3000);
+            }
+            
+            btn.disabled = false;
+            btn.style.opacity = '1';
+        }
+
+        compareVersion(v1, v2) {
+            const a = v1.split('.').map(Number);
+            const b = v2.split('.').map(Number);
+            for (let i = 0; i < Math.max(a.length, b.length); i++) {
+                const n1 = a[i] || 0, n2 = b[i] || 0;
+                if (n1 > n2) return 1;
+                if (n1 < n2) return -1;
+            }
+            return 0;
         }
     }
 

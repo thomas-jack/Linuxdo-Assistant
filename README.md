@@ -15,6 +15,7 @@
 - **中英双语** - 界面语言随心切换
 - **可拖动面板** - 放在你喜欢的位置，不遮挡阅读
 - **记忆功能** - 自动保存位置和偏好设置
+- **自动更新** - 支持 Tampermonkey 自动检测更新，也可手动检查
 
 ## 📸 截图预览
 
@@ -45,7 +46,7 @@
 
 1. 确保已安装 Tampermonkey
 2. 点击下方链接直接安装：
-   - **[安装 Linux.do Assistant](https://github.com/dongshuyan/Linuxdo-Assistant/raw/main/Linuxdo-Assistant.js)**
+   - **[安装 Linux.do Assistant](https://github.com/dongshuyan/Linuxdo-Assistant/raw/main/Linuxdo-Assistant.user.js)**
 3. Tampermonkey 会自动识别并弹出安装页
 4. 点击「安装」即可
 
@@ -53,7 +54,7 @@
 
 1. 点击 Tampermonkey 图标 → 「添加新脚本」
 2. 删除编辑器中的默认代码
-3. 复制 [Linuxdo-Assistant.js](https://github.com/dongshuyan/Linuxdo-Assistant/blob/main/Linuxdo-Assistant.js) 的全部内容粘贴进去
+3. 复制 [Linuxdo-Assistant.user.js](https://github.com/dongshuyan/Linuxdo-Assistant/blob/main/Linuxdo-Assistant.user.js) 的全部内容粘贴进去
 4. 按 `Ctrl+S` 或点击「文件 → 保存」
 
 ## 🚀 使用说明
@@ -68,8 +69,17 @@
 | **点击主题图标** | 切换亮色/深色/跟随系统 |
 | **点击刷新按钮** | 手动刷新数据 |
 | **点击链接图标** | 跳转到对应网页版 |
+| **检查更新按钮** | 在偏好设置页面，手动检查是否有新版本 |
 
 > 💡 **提示**：使用前请确保已登录 linux.do 账号
+
+## 🔄 自动更新
+
+脚本支持自动更新功能：
+
+- **自动检测**：Tampermonkey 会定期检查 GitHub 上的最新版本
+- **手动检查**：在「偏好设置」页面点击「检查更新」按钮
+- 发现新版本后，Tampermonkey 会提示你更新，无需手动重新安装
 
 ## ⚠️ 注意事项
 
