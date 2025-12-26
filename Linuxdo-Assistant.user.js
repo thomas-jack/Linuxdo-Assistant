@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      1.6.1
+// @version      1.7.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -117,7 +117,10 @@
             cdk_auth_tip: "需先完成授权才能查看社区分数",
             cdk_go_auth: "前往登录",
             cdk_refresh: "刷新",
-            cdk_score_desc: "基于徽章计算的社区信誉分"
+            cdk_score_desc: "基于徽章计算的社区信誉分",
+            support_title: "支持作者",
+            support_desc: "您的支持是持续开发的动力",
+            support_thanks: "感谢您的支持 ❤️"
         },
         en: {
             title: "Linux.do HUD",
@@ -179,7 +182,10 @@
             cdk_auth_tip: "Please authorize to view CDK score",
             cdk_go_auth: "Go to Login",
             cdk_refresh: "Refresh",
-            cdk_score_desc: "Community reputation based on badges"
+            cdk_score_desc: "Community reputation based on badges",
+            support_title: "Support",
+            support_desc: "Your support keeps development going",
+            support_thanks: "Thank you for your support ❤️"
         }
     };
 
@@ -356,7 +362,7 @@
         /* 面板 */
         .lda-panel {
             position: absolute; top: 0; right: 0;
-            width: 340px; background: var(--lda-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+            width: 370px; background: var(--lda-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
             border: var(--lda-border); border-radius: var(--lda-rad); box-shadow: var(--lda-shadow);
             display: none; flex-direction: column; overflow: hidden; margin-top: 0;
             transform-origin: top right; animation: lda-in 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -560,6 +566,60 @@
         }
         .lda-sort-btn:hover { opacity: 0.9; }
         .lda-sort-btn.saved { background: var(--lda-green); }
+
+        /* 支持作者区域 */
+        .lda-support {
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.08), rgba(249, 115, 22, 0.06), rgba(59, 130, 246, 0.08));
+            border-radius: 10px; padding: 10px 12px; margin-bottom: 10px;
+            border: 1px solid rgba(239, 68, 68, 0.15);
+        }
+        .lda-support-header {
+            display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+        }
+        .lda-support-title {
+            font-size: 13px; font-weight: 600; color: var(--lda-fg);
+            display: flex; align-items: center; gap: 6px;
+        }
+        .lda-support-heart {
+            display: inline-block; animation: lda-heartbeat 1.2s ease-in-out infinite;
+            filter: drop-shadow(0 0 3px rgba(239, 68, 68, 0.4));
+        }
+        @keyframes lda-heartbeat {
+            0%, 100% { transform: scale(1); }
+            14% { transform: scale(1.15); }
+            28% { transform: scale(1); }
+            42% { transform: scale(1.1); }
+            70% { transform: scale(1); }
+        }
+        .lda-support-desc { font-size: 10px; color: var(--lda-dim); }
+        .lda-support-grid {
+            display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+        }
+        .lda-support-card {
+            display: flex; flex-direction: column; align-items: center; padding: 8px 6px;
+            background: var(--lda-bg); border: 1px solid var(--lda-border); border-radius: 8px;
+            cursor: pointer; transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            text-decoration: none !important; position: relative; overflow: hidden;
+        }
+        .lda-support-card::before {
+            content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+            background: var(--card-accent, var(--lda-accent)); transition: height 0.25s;
+        }
+        .lda-support-card:hover {
+            border-color: var(--card-accent, var(--lda-accent));
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        .lda-support-card:hover::before { height: 3px; }
+        .lda-support-card.tier-1 { --card-accent: #10b981; }
+        .lda-support-card.tier-2 { --card-accent: #3b82f6; }
+        .lda-support-card.tier-3 { --card-accent: #f59e0b; }
+        .lda-support-card.tier-4 { --card-accent: #ef4444; }
+        .lda-support-icon { font-size: 16px; margin-bottom: 2px; }
+        .lda-support-amount {
+            font-size: 12px; font-weight: 700; color: var(--card-accent, var(--lda-accent));
+        }
+        .lda-support-unit { font-size: 9px; color: var(--lda-dim); margin-top: 1px; }
     `;
 
     // 主程序
@@ -625,8 +685,9 @@
                 </div>
                 <div class="lda-panel">
                     <div class="lda-head">
-                        <div class="lda-title">Linux.do Assistant</div>
+                        <div class="lda-title">Linux.do 小秘书</div>
                         <div class="lda-actions">
+                            <div class="lda-icon-btn" id="lda-btn-update" title="${this.t('check_update')}"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M21 10.12h-6.78l2.74-2.82c-2.73-2.7-7.15-2.8-9.88-.1-2.73 2.71-2.73 7.08 0 9.79s7.15 2.71 9.88 0C18.32 15.65 19 14.08 19 12.1h2c0 1.98-.88 4.55-2.64 6.29-3.51 3.48-9.21 3.48-12.72 0-3.5-3.47-3.53-9.11-.02-12.58s9.14-3.47 12.65 0L21 3v7.12z"/></svg></div>
                             <div class="lda-icon-btn" id="lda-btn-theme" title="${this.t('theme_tip')}"></div>
                             <div class="lda-icon-btn" id="lda-btn-close"><svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></div>
                         </div>
@@ -688,14 +749,28 @@
                 </div>
             `).join('');
             
+            // 支持选项配置
+            const supportTiers = [
+                { id: 1, amount: 2, icon: '☕', url: 'https://credit.linux.do/paying/online?token=01fdff1ae667a2625d225191717e3281c600218c2152340a4fcd56d7c4423579' },
+                { id: 2, amount: 5, icon: '🍵', url: 'https://credit.linux.do/paying/online?token=1f2ceff6ef0bad81cb09c45e03d5bad3c3f71085f6541f56a3de5f20f9c70800' },
+                { id: 3, amount: 10, icon: '🍰', url: 'https://credit.linux.do/paying/online?token=cbb30b6eb01e4de09ba1cdba487d4d19a1c6639095d089acd41682f6e9639bc2' },
+                { id: 4, amount: 20, icon: '🎂', url: 'https://credit.linux.do/paying/online?token=10fc4d4c07d8073894b1c9654da43da004df5d33a0251dd44ede2199b104373d' }
+            ];
+            const supportCardsHtml = supportTiers.map(t => `
+                <a href="${t.url}" target="_blank" class="lda-support-card tier-${t.id}" rel="noopener">
+                    <span class="lda-support-icon">${t.icon}</span>
+                    <span class="lda-support-amount">${t.amount}</span>
+                    <span class="lda-support-unit">LDC</span>
+                </a>
+            `).join('');
+
             this.dom.setting.innerHTML = Utils.html`
                 <div class="lda-card">
                     <div class="lda-opt">
-                        <div class="lda-opt-label">${this.t('set_auto')}</div>
-                        <label class="lda-switch"><input type="checkbox" id="inp-expand" ${expand?'checked':''}><span class="lda-slider"></span></label>
-                    </div>
-                    <div class="lda-opt">
-                        <div class="lda-opt-label">${this.t('set_lang')}</div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <label class="lda-switch"><input type="checkbox" id="inp-expand" ${expand?'checked':''}><span class="lda-slider"></span></label>
+                            <div class="lda-opt-label" style="font-size:12px">${this.t('set_auto')}</div>
+                        </div>
                         <div class="lda-seg" id="grp-lang">
                             <div class="lda-seg-item ${r('zh', lang)}" data-v="zh">中文</div>
                             <div class="lda-seg-item ${r('en', lang)}" data-v="en">EN</div>
@@ -739,20 +814,25 @@
                         <button class="lda-sort-btn" id="btn-save-order">${this.t('tab_order_save')}</button>
                     </div>
                 </div>
-                <div style="text-align:center; margin-top:16px;">
-                    <div style="font-size:10px; color:var(--lda-dim); opacity:0.6; margin-bottom:8px;">
+                <div class="lda-support">
+                    <div class="lda-support-header">
+                        <div class="lda-support-title">
+                            <span class="lda-support-heart">💖</span>
+                            ${this.t('support_title')}
+                        </div>
+                        <div class="lda-support-desc">${this.t('support_desc')}</div>
+                    </div>
+                    <div class="lda-support-grid">
+                        ${supportCardsHtml}
+                    </div>
+                </div>
+                <div style="text-align:center; margin-top:8px;">
+                    <div style="font-size:10px; color:var(--lda-dim); opacity:0.6;">
                         v${GM_info.script.version} &bull; By Sauterne@Linux.do
                     </div>
-                    <button id="btn-check-update" style="
-                        padding: 6px 14px; font-size: 11px; cursor: pointer;
-                        background: var(--lda-accent); color: #fff; border: none; border-radius: 6px;
-                        transition: opacity 0.2s;
-                    ">${this.t('check_update')}</button>
-                    <div id="update-status" style="font-size:11px; margin-top:6px; min-height:16px;"></div>
                 </div>
             `;
             
-            Utils.el('#btn-check-update', this.dom.setting).onclick = () => this.checkUpdate();
             this.initSortable();
         }
         
@@ -847,6 +927,7 @@
         bindGlobalEvents() {
             // 悬浮球点击在 initDrag 中处理（区分拖动和点击）
             Utils.el('#lda-btn-close').onclick = () => this.togglePanel(false);
+            Utils.el('#lda-btn-update').onclick = (e) => { e.stopPropagation(); this.checkUpdate(); };
             
             // 点击页面其他地方收起面板
             document.addEventListener('click', (e) => {
@@ -1485,13 +1566,11 @@
         }
 
         async checkUpdate() {
-            const btn = Utils.el('#btn-check-update', this.dom.setting);
-            const status = Utils.el('#update-status', this.dom.setting);
+            const btn = Utils.el('#lda-btn-update', this.dom.root);
             const updateUrl = 'https://raw.githubusercontent.com/dongshuyan/Linuxdo-Assistant/main/Linuxdo-Assistant.user.js';
             
-            btn.disabled = true;
-            btn.style.opacity = '0.6';
-            status.innerHTML = `<span style="color:var(--lda-dim)">${this.t('checking')}</span>`;
+            if (btn.classList.contains('lda-spin')) return; // 防止重复点击
+            btn.classList.add('lda-spin');
             
             try {
                 const res = await Utils.request(updateUrl);
@@ -1502,19 +1581,52 @@
                 const current = GM_info.script.version;
                 
                 if (this.compareVersion(remote, current) > 0) {
-                    status.innerHTML = `<span style="color:var(--lda-accent)">${this.t('new_version')} v${remote}</span>
-                        <a href="${updateUrl}" target="_blank" style="color:var(--lda-accent);margin-left:6px;text-decoration:underline;">更新</a>`;
+                    // 有新版本，显示提示
+                    this.showUpdateToast(remote, updateUrl);
                 } else {
-                    status.innerHTML = `<span style="color:var(--lda-green)">✓ ${this.t('latest')}</span>`;
-                    setTimeout(() => { status.innerHTML = ''; }, 3000);
+                    this.showToast(`✓ ${this.t('latest')} (v${current})`, 'success');
                 }
             } catch (e) {
-                status.innerHTML = `<span style="color:var(--lda-red)">${this.t('update_err')}</span>`;
-                setTimeout(() => { status.innerHTML = ''; }, 3000);
+                this.showToast(this.t('update_err'), 'error');
             }
             
-            btn.disabled = false;
-            btn.style.opacity = '1';
+            btn.classList.remove('lda-spin');
+        }
+        
+        showToast(msg, type = 'info') {
+            const toast = document.createElement('div');
+            toast.style.cssText = `
+                position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+                padding: 10px 20px; border-radius: 8px; font-size: 13px; z-index: 999999;
+                background: ${type === 'success' ? 'var(--lda-green)' : type === 'error' ? 'var(--lda-red)' : 'var(--lda-accent)'};
+                color: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+                animation: lda-fade 0.3s;
+            `;
+            toast.textContent = msg;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 2500);
+        }
+        
+        showUpdateToast(version, url) {
+            const toast = document.createElement('div');
+            toast.style.cssText = `
+                position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+                padding: 12px 20px; border-radius: 8px; font-size: 13px; z-index: 999999;
+                background: var(--lda-bg, #fff); color: var(--lda-fg, #000);
+                border: 1px solid var(--lda-accent); box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+                display: flex; align-items: center; gap: 12px;
+                animation: lda-fade 0.3s;
+            `;
+            toast.innerHTML = `
+                <span style="color:var(--lda-accent);font-weight:600;">${this.t('new_version')} v${version}</span>
+                <a href="${url}" target="_blank" style="
+                    background:var(--lda-accent);color:#fff;padding:4px 12px;border-radius:6px;
+                    text-decoration:none;font-size:12px;font-weight:600;
+                ">更新</a>
+                <span style="cursor:pointer;opacity:0.5;font-size:18px;" onclick="this.parentElement.remove()">×</span>
+            `;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 8000);
         }
 
         compareVersion(v1, v2) {
