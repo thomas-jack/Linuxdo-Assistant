@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      2.4.0
+// @version      3.0.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -96,6 +96,7 @@
             level: "当前级别",
             status_ok: "已达标",
             status_fail: "未达标",
+            status_fallback: "降级显示",
             balance: "当前余额",
             daily_limit: "今日剩余额度",
             recent: "近7日收支",
@@ -117,7 +118,7 @@
             refresh_tip: "仅在面板展开时定时刷新",
             theme_tip: "点击切换：亮色 / 深色 / 跟随系统",
             link_tip: "前往网页版",
-            refresh_tip: "刷新数据",
+            refresh_tip_btn: "刷新数据",
             refresh_done: "刷新完毕",
             check_update: "检查更新",
             checking: "检查中...",
@@ -156,8 +157,12 @@
             network_error_tip: "可能是网络波动或运行环境问题，请稍后重试",
             network_error_retry: "点击刷新",
             trust_fallback_title: "Connect 数据暂不可用",
-            trust_fallback_tip: "已显示 Summary 数据，完整数据请稍后刷新",
-            trust_data_source: "数据来源"
+            trust_fallback_tip: "未获取到 Connect 完整数据，请稍后刷新再试（当前暂用 Summary 数据展示）",
+            trust_data_source: "数据来源",
+            // extra hints
+            connect_open: "打开 Connect",
+            credit_open: "打开 Credit",
+            cdk_open: "打开 CDK"
         },
         en: {
             title: "Linux.do HUD",
@@ -173,6 +178,7 @@
             level: "Level",
             status_ok: "Qualified",
             status_fail: "Unqualified",
+            status_fallback: "Fallback",
             balance: "Balance",
             daily_limit: "Daily Limit",
             recent: "Recent Activity",
@@ -194,7 +200,7 @@
             refresh_tip: "Refresh periodically only when panel is open",
             theme_tip: "Toggle: Light / Dark / Auto",
             link_tip: "Open Website",
-            refresh_tip: "Refresh",
+            refresh_tip_btn: "Refresh",
             refresh_done: "Refreshed",
             check_update: "Check Update",
             checking: "Checking...",
@@ -232,9 +238,12 @@
             network_error_title: "Unable to load data",
             network_error_tip: "Network or environment issue, please try again later",
             network_error_retry: "Refresh",
-            trust_fallback_title: "Connect data unavailable",
-            trust_fallback_tip: "Showing Summary data. Refresh for complete data",
-            trust_data_source: "Data source"
+            trust_fallback_title: "Connect unavailable",
+            trust_fallback_tip: "Unable to fetch full Connect data. Please refresh later (showing Summary for now).",
+            trust_data_source: "Data source",
+            connect_open: "Open Connect",
+            credit_open: "Open Credit",
+            cdk_open: "Open CDK"
         }
     };
 
@@ -273,17 +282,17 @@
         static html(strings, ...values) { return strings.reduce((r, s, i) => r + s + (values[i] || ''), ''); }
         static el(s, p = document) { return p.querySelector(s); }
         static els(s, p = document) { return p.querySelectorAll(s); }
-        
-        // 获取当前登录用户名
+
+        // 获取当前登录用户名（保留旧逻辑，作为兜底）
         static getCurrentUsername() {
             // 方法1: 从 Discourse 全局对象获取
             try {
-                const currentUser = window.Discourse?.User?.current?.() || 
-                                    window.Discourse?.currentUser ||
-                                    window.User?.current?.();
+                const currentUser = window.Discourse?.User?.current?.() ||
+                    window.Discourse?.currentUser ||
+                    window.User?.current?.();
                 if (currentUser?.username) return currentUser.username;
-            } catch (e) {}
-            
+            } catch (e) { }
+
             // 方法2: 从页面 meta 标签或 preload 数据获取
             try {
                 const preloadData = document.getElementById('data-preloaded');
@@ -294,8 +303,8 @@
                         if (cu?.username) return cu.username;
                     }
                 }
-            } catch (e) {}
-            
+            } catch (e) { }
+
             // 方法3: 从导航栏用户头像链接获取
             try {
                 const avatarLink = document.querySelector('#current-user a[href*="/u/"]');
@@ -303,8 +312,8 @@
                     const match = avatarLink.href.match(/\/u\/([^\/]+)/);
                     if (match) return match[1];
                 }
-            } catch (e) {}
-            
+            } catch (e) { }
+
             // 方法4: 从 localStorage 获取（Discourse 常用存储）
             try {
                 const stored = localStorage.getItem('discourse_current_user');
@@ -312,9 +321,21 @@
                     const parsed = JSON.parse(stored);
                     if (parsed?.username) return parsed.username;
                 }
-            } catch (e) {}
-            
+            } catch (e) { }
+
             return null;
+        }
+
+        // ✅ 新增：权威 session 登录判定（同源）
+        static async fetchSessionUser() {
+            try {
+                const r = await fetch('/session/current.json', { credentials: 'include' });
+                if (!r.ok) return null;
+                const data = await r.json();
+                return data?.current_user || null;
+            } catch (_) {
+                return null;
+            }
         }
 
         // 获取用户信息（含信任等级）- 使用同源请求更稳定
@@ -330,7 +351,7 @@
             }
         }
 
-        // 获取用户 summary 数据（0-1级用户专用）
+        // 获取用户 summary 数据
         static async fetchUserSummary(username) {
             if (!username) return null;
             try {
@@ -345,8 +366,9 @@
 
         // 格式化阅读时间（秒 -> 可读格式）
         static formatReadTime(seconds) {
-            if (seconds < 60) return `${seconds}秒`;
-            const minutes = Math.floor(seconds / 60);
+            const s = Number(seconds) || 0;
+            if (s < 60) return `${s}秒`;
+            const minutes = Math.floor(s / 60);
             if (minutes < 60) return `${minutes}分钟`;
             const hours = Math.floor(minutes / 60);
             const remainMins = minutes % 60;
@@ -408,13 +430,14 @@
         const cacheAndNotify = async () => {
             try {
                 const res = await fetch(CONFIG.API.CDK_INFO, { credentials: 'include' });
+                if (!res.ok) return;
                 const json = await res.json();
                 if (!json?.data) return;
                 Utils.set(CONFIG.KEYS.CACHE_CDK, { data: json.data, ts: Date.now() });
                 try {
                     window.parent?.postMessage({ type: 'lda-cdk-data', payload: { data: json.data } }, '*');
-                } catch (_) {}
-            } catch (_) {}
+                } catch (_) { }
+            } catch (_) { }
         };
 
         // 初始化立即拉取一次
@@ -448,6 +471,7 @@
             --lda-ball-radius: 14px;
             --lda-red: #ef4444;
             --lda-green: #22c55e;
+            --lda-neutral: rgba(125,125,125,0.25);
             --lda-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         }
         .lda-dark {
@@ -458,10 +482,11 @@
             --lda-shadow: 0 12px 30px -4px rgba(0, 0, 0, 0.6);
             --lda-accent: #38bdf8;
             --lda-ball-ring: rgba(255,255,255,0.15);
+            --lda-neutral: rgba(255,255,255,0.18);
         }
 
         #lda-root { position: fixed; z-index: var(--lda-z); font-family: var(--lda-font); font-size: 14px; user-select: none; color: var(--lda-fg); min-width: var(--lda-ball-size); min-height: var(--lda-ball-size); opacity: var(--lda-opacity); transition: opacity 0.2s ease; }
-        
+
         /* 悬浮球 */
         .lda-ball {
             position: relative;
@@ -516,7 +541,7 @@
         /* 导航 */
         .lda-tabs { display: flex; padding: 6px 16px 0; border-bottom: var(--lda-border); gap: 16px; }
         .lda-tab {
-            padding: 8px 0; font-size: 12px; cursor: pointer; color: var(--lda-dim); 
+            padding: 8px 0; font-size: 12px; cursor: pointer; color: var(--lda-dim);
             border-bottom: 2px solid transparent; transition: 0.2s; font-weight: 500;
         }
         .lda-tab:hover { color: var(--lda-fg); }
@@ -540,17 +565,18 @@
             background: rgba(125,125,125,0.03); border-radius: 10px; padding: 14px; margin-bottom: 12px;
             border: var(--lda-border); position: relative;
         }
-        
+
         /* 头部信息栏 & 动作按钮组 */
         .lda-info-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; min-height: 28px; }
         .lda-lvl-group { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding-right: 60px; /* 留出右侧按钮空间 */ }
         .lda-big-lvl { font-size: 20px; font-weight: 800; color: var(--lda-accent); line-height: 1; }
-        .lda-badge { 
+        .lda-badge {
             padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600;
             background: rgba(125,125,125,0.1); display: inline-block;
         }
         .lda-badge.ok { background: rgba(34, 197, 94, 0.1); color: var(--lda-green); }
         .lda-badge.no { background: rgba(239, 68, 68, 0.1); color: var(--lda-red); }
+        .lda-badge.neutral { background: rgba(125,125,125,0.10); color: var(--lda-dim); }
 
         /* 排名统计栏 */
         .lda-stats-bar {
@@ -580,7 +606,7 @@
         }
         .lda-act-btn:hover { color: var(--lda-accent); background: #fff; }
         .lda-dark .lda-act-btn:hover { background: rgba(255,255,255,0.1); }
-        
+
         /* 刷新按钮旋转逻辑 */
         .lda-act-btn.loading svg { animation: lda-spin 0.8s linear infinite; }
 
@@ -591,10 +617,10 @@
         .lda-i-val { font-family: 'SF Mono', monospace; font-weight: 600; display: flex; align-items: center; }
         .lda-progress { height: 5px; background: rgba(125,125,125,0.1); border-radius: 3px; overflow: hidden; }
         .lda-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease-out; }
-        
+
         /* 涨跌 Diff */
-        .lda-diff { 
-            font-size: 10px; padding: 1px 4px; border-radius: 4px; font-weight: 700; margin-left: 6px; 
+        .lda-diff {
+            font-size: 10px; padding: 1px 4px; border-radius: 4px; font-weight: 700; margin-left: 6px;
             display: inline-flex; align-items: center; height: 16px;
         }
         .lda-diff.up { color: var(--lda-red); background: rgba(239, 68, 68, 0.1); }
@@ -604,7 +630,7 @@
         .lda-credit-hero { text-align: center; padding: 20px 0; }
         .lda-credit-num { font-size: 28px; font-weight: 700; color: var(--lda-fg); font-family: monospace; letter-spacing: -1px; }
         .lda-credit-label { font-size: 11px; text-transform: uppercase; color: var(--lda-dim); margin-top: 4px; letter-spacing: 1px; }
-        
+
         .lda-row-rec { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed rgba(125,125,125,0.2); font-size: 12px; }
 
         /* Credit 授权提示卡片 */
@@ -630,7 +656,7 @@
         .lda-opt-label { font-size: 13px; font-weight: 500; }
         .lda-opt-right { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
         .lda-opt-sub { font-size: 12px; color: var(--lda-dim); }
-        
+
         .lda-switch { position: relative; width: 36px; height: 20px; display: inline-block; }
         .lda-switch input { opacity: 0; width: 0; height: 0; }
         .lda-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #cbd5e1; transition: .3s; border-radius: 20px; }
@@ -761,60 +787,6 @@
             border-radius: 8px;
         }
 
-        /* V3新增：友好错误提示卡片 */
-        .lda-error-card {
-            text-align: center;
-            padding: 28px 20px;
-            background: linear-gradient(135deg, rgba(125,125,125,0.02), rgba(125,125,125,0.05));
-            border-radius: 12px;
-            border: 1px dashed rgba(125,125,125,0.2);
-        }
-        .lda-error-icon {
-            width: 48px;
-            height: 48px;
-            margin: 0 auto 14px;
-            border-radius: 50%;
-            background: rgba(125,125,125,0.08);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--lda-dim);
-        }
-        .lda-error-title {
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--lda-fg);
-            margin-bottom: 6px;
-        }
-        .lda-error-tip {
-            font-size: 12px;
-            color: var(--lda-dim);
-            margin-bottom: 18px;
-            line-height: 1.5;
-        }
-        .lda-error-btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 10px 20px;
-            background: rgba(125,125,125,0.1);
-            color: var(--lda-fg);
-            border: 1px solid rgba(125,125,125,0.15);
-            border-radius: 8px;
-            font-size: 13px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .lda-error-btn:hover {
-            background: rgba(125,125,125,0.15);
-            border-color: rgba(125,125,125,0.25);
-        }
-        .lda-error-btn svg {
-            width: 16px;
-            height: 16px;
-        }
-
         /* V3新增：降级提示横幅 */
         .lda-fallback-banner {
             display: flex;
@@ -862,7 +834,7 @@
         constructor() {
             this.state = {
                 lang: Utils.get(CONFIG.KEYS.LANG, 'zh'),
-                theme: Utils.get(CONFIG.KEYS.THEME, 'auto'), 
+                theme: Utils.get(CONFIG.KEYS.THEME, 'auto'),
                 height: Utils.get(CONFIG.KEYS.HEIGHT, 'auto'), // Default: Auto
                 expand: Utils.get(CONFIG.KEYS.EXPAND, true),   // Default: True
                 trustCache: Utils.get(CONFIG.KEYS.CACHE_TRUST, {}),
@@ -913,7 +885,7 @@
             this.prewarmAll();
             this.startAutoRefreshTimer();
             this.maybeAutoCheckUpdate();
-            
+
             if (this.state.expand || forceOpen) {
                 this.togglePanel(true);
             }
@@ -1000,14 +972,14 @@
             const r = (val, cur) => val === cur ? 'active' : '';
             const opacityVal = Math.max(0.5, Math.min(1, Number(opacity) || 1));
             const opacityPercent = Math.round(opacityVal * 100);
-            
+
             // 标签名称映射
             const tabNames = {
                 trust: this.t('tab_trust'),
                 credit: this.t('tab_credit'),
                 cdk: this.t('tab_cdk')
             };
-            
+
             // 生成排序项 HTML
             const sortItemsHtml = tabOrder.map((key, idx) => `
                 <div class="lda-sort-item" draggable="true" data-key="${key}">
@@ -1018,7 +990,7 @@
                     <span class="lda-sort-label">${tabNames[key]}</span>
                 </div>
             `).join('');
-            
+
             // 支持选项配置
             const supportTiers = [
                 { id: 1, amount: 2, icon: '☕', url: 'https://credit.linux.do/paying/online?token=01fdff1ae667a2625d225191717e3281c600218c2152340a4fcd56d7c4423579' },
@@ -1034,11 +1006,12 @@
                 </a>
             `).join('');
 
+            // ✅ 隐藏“清除缓存”功能入口：不再渲染按钮（保留内部逻辑以备将来启用）
             this.dom.setting.innerHTML = Utils.html`
                 <div class="lda-card">
                     <div class="lda-opt">
                         <div style="display:flex;align-items:center;gap:8px;">
-                            <label class="lda-switch"><input type="checkbox" id="inp-expand" ${expand?'checked':''}><span class="lda-slider"></span></label>
+                            <label class="lda-switch"><input type="checkbox" id="inp-expand" ${expand ? 'checked' : ''}><span class="lda-slider"></span></label>
                             <div class="lda-opt-label" style="font-size:12px">${this.t('set_auto')}</div>
                         </div>
                         <div class="lda-seg" id="grp-lang">
@@ -1096,29 +1069,21 @@
                         ${supportCardsHtml}
                     </div>
                 </div>
-                <!-- 清除缓存功能暂时隐藏 -->
-                <div class="lda-card" style="margin-top:10px; display:none;">
-                    <div class="lda-opt" style="flex-direction:column; align-items:flex-start; margin:0; padding:0; border:none;">
-                        <div class="lda-opt-label">${this.t('clear_cache')}</div>
-                        <div class="lda-opt-sub" style="margin:6px 0 10px 0;">${this.t('clear_cache_tip')}</div>
-                        <button class="lda-sort-btn" id="btn-clear-cache">${this.t('clear_cache')}</button>
-                    </div>
-                </div>
                 <div style="text-align:center; margin-top:8px;">
                     <div style="font-size:10px; color:var(--lda-dim); opacity:0.6;">
                         v${GM_info.script.version} &bull; By Sauterne@Linux.do
                     </div>
                 </div>
             `;
-            
+
             this.initSortable();
         }
-        
+
         initSortable() {
             const container = Utils.el('#sortable-tabs', this.dom.setting);
             const saveBtn = Utils.el('#btn-save-order', this.dom.setting);
             let draggedItem = null;
-            
+
             // 更新序号显示
             const updateNumbers = () => {
                 const items = container.querySelectorAll('.lda-sort-item');
@@ -1126,7 +1091,7 @@
                     item.querySelector('.lda-sort-num').textContent = idx + 1;
                 });
             };
-            
+
             // 拖拽开始
             container.addEventListener('dragstart', (e) => {
                 if (e.target.classList.contains('lda-sort-item')) {
@@ -1135,7 +1100,7 @@
                     e.dataTransfer.effectAllowed = 'move';
                 }
             });
-            
+
             // 拖拽结束
             container.addEventListener('dragend', (e) => {
                 if (e.target.classList.contains('lda-sort-item')) {
@@ -1147,7 +1112,7 @@
                     updateNumbers();
                 }
             });
-            
+
             // 拖拽经过
             container.addEventListener('dragover', (e) => {
                 e.preventDefault();
@@ -1160,7 +1125,7 @@
                     target.classList.add('drag-over');
                 }
             });
-            
+
             // 放置
             container.addEventListener('drop', (e) => {
                 e.preventDefault();
@@ -1169,7 +1134,7 @@
                     const items = [...container.querySelectorAll('.lda-sort-item')];
                     const draggedIdx = items.indexOf(draggedItem);
                     const targetIdx = items.indexOf(target);
-                    
+
                     if (draggedIdx < targetIdx) {
                         target.after(draggedItem);
                     } else {
@@ -1178,7 +1143,7 @@
                     updateNumbers();
                 }
             });
-            
+
             // 保存按钮
             saveBtn.onclick = (e) => {
                 e.stopPropagation();
@@ -1187,7 +1152,7 @@
                 const newOrder = [...items].map(item => item.dataset.key);
                 this.state.tabOrder = newOrder;
                 Utils.set(CONFIG.KEYS.TAB_ORDER, newOrder);
-                
+
                 // 显示保存成功
                 saveBtn.textContent = this.t('tab_order_saved');
                 saveBtn.classList.add('saved');
@@ -1195,7 +1160,7 @@
                     saveBtn.textContent = this.t('tab_order_save');
                     saveBtn.classList.remove('saved');
                 }, 1500);
-                
+
                 // 重新渲染应用新顺序
                 this.dom.root.remove();
                 this.init(wasOpen);
@@ -1203,10 +1168,9 @@
         }
 
         bindGlobalEvents() {
-            // 悬浮球点击在 initDrag 中处理（区分拖动和点击）
             Utils.el('#lda-btn-close').onclick = () => this.togglePanel(false);
             Utils.el('#lda-btn-update').onclick = (e) => { e.stopPropagation(); this.checkUpdate({ isAuto: false, force: true }); };
-            
+
             // 点击页面其他地方收起面板
             document.addEventListener('click', (e) => {
                 if (!this.dom.root.contains(e.target) && this.dom.panel.style.display === 'flex') {
@@ -1231,7 +1195,7 @@
                     this.state.lang = langNode.dataset.v;
                     Utils.set(CONFIG.KEYS.LANG, this.state.lang);
                     this.dom.root.remove();
-                    this.init(wasOpen); 
+                    this.init(wasOpen);
                     return;
                 }
                 const sizeNode = e.target.closest('#grp-size .lda-seg-item');
@@ -1248,15 +1212,9 @@
                     this.renderSettings();
                     this.startAutoRefreshTimer();
                 }
-                if(e.target.id === 'inp-expand') {
+                if (e.target.id === 'inp-expand') {
                     this.state.expand = e.target.checked;
                     Utils.set(CONFIG.KEYS.EXPAND, e.target.checked);
-                }
-                if (e.target.id === 'btn-clear-cache') {
-                    this.showConfirm(this.t('clear_cache_tip'), () => {
-                        this.clearAllCaches(false, true); // 清除后重新获取数据
-                        this.showToast(this.t('clear_cache_done'), 'success');
-                    });
                 }
                 if (wasOpen) this.togglePanel(true);
             };
@@ -1284,7 +1242,7 @@
                 if (wasOpen) this.togglePanel(true);
             };
 
-            // 窗口获得焦点时自动刷新 Credit 和 CDK（用户授权后回来）
+            // 窗口获得焦点时自动刷新（用户授权后回来）
             window.addEventListener('focus', () => this.refreshOnFocusIfNeeded());
 
             window.addEventListener('resize', () => {
@@ -1375,7 +1333,6 @@
 
         makeUserSig(info) {
             if (!info) return null;
-            // 优先使用 username，保持 sig 格式一致，避免触发误清缓存
             if (info.username) return `uname:${info.username}`;
             if (info.user?.username) return `uname:${info.user.username}`;
             if (info.user_id || info.id) return `uid:${info.user_id || info.id}`;
@@ -1385,17 +1342,14 @@
         ensureUserSig(sig) {
             if (!sig) return;
             if (this.userSig && this.userSig !== sig) {
-                // 检查是否是同一用户的不同格式 sig（如 uid vs uname）
                 const isCompat = (a, b) => {
                     const ua = a.startsWith('uname:');
                     const ub = b.startsWith('uname:');
                     const ia = a.startsWith('uid:');
                     const ib = b.startsWith('uid:');
-                    // 如果一个是 uname 一个是 uid，可能是同一用户
                     return (ua && ib) || (ia && ub);
                 };
                 if (!isCompat(this.userSig, sig)) {
-                    // 真正的用户切换才清空缓存，但只清数据不清 DOM
                     this.trustData = null;
                     this.creditData = null;
                     this.cdkCache = null;
@@ -1410,26 +1364,6 @@
             }
             this.userSig = sig;
             Utils.set(CONFIG.KEYS.USER_SIG, sig);
-        }
-
-        clearAllCaches(showToast = true, refetch = false) {
-            this.trustData = null;
-            this.creditData = null;
-            this.cdkCache = null;
-            this.state.trustCache = {};
-            this.lastFetch = { trust: 0, credit: 0, cdk: 0 };
-            this.userSig = null;
-            Utils.set(CONFIG.KEYS.CACHE_TRUST, {});
-            Utils.set(CONFIG.KEYS.CACHE_TRUST_DATA, null);
-            Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
-            Utils.set(CONFIG.KEYS.CACHE_CDK, null);
-            Utils.set(CONFIG.KEYS.CACHE_META, this.lastFetch);
-            Utils.set(CONFIG.KEYS.USER_SIG, null);
-            if (showToast) this.showToast(this.t('clear_cache_done'), 'success');
-            if (this.dom.trust) this.dom.trust.innerHTML = '';
-            if (this.dom.credit) this.dom.credit.innerHTML = '';
-            if (this.dom.cdk) this.dom.cdk.innerHTML = '';
-            if (refetch) this.prewarmAll();
         }
 
         isExpired(type) {
@@ -1451,144 +1385,58 @@
             this.checkUpdate({ isAuto: true });
         }
 
-        async refreshTrust(arg = true) {
-            const base = { background: false, force: undefined, autoRetry: true, manual: false };
-            const opts = typeof arg === 'object' ? { ...base, ...arg } : { ...base, autoRetry: !!arg, force: arg === false ? false : undefined };
-            const autoRetry = opts.autoRetry;
-            const manual = opts.manual;
-            const forceFetch = opts.force ?? !opts.background;
-            const wrap = this.dom.trust;
-            if (!wrap) return;
-            const endWait = this.beginWait('trust');
-            
-            // 设置刷新状态并开始按钮旋转
-            this.refreshingPages.trust = true;
-            this.refreshStartTime.trust = Date.now();
-            this.setRefreshBtnLoading('trust', true);
-            
-            // 确保显示加载提示
-            if (!wrap.innerHTML || wrap.innerHTML.trim() === '') {
-                wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
-            }
+        // ✅ 新：通用友好状态卡片（用于网络错误/环境问题等）
+        renderStateCard(wrap, page, {
+            title,
+            tip,
+            levelText = null,
+            leftUrl = null,
+            leftText = null,
+            onRetry = null
+        }) {
+            this.focusFlags[page] = true;
 
-            // 保存用户信息供错误处理使用
-            let userTrustLevel = null;
-            let username = null;
+            const lvlHtml = levelText !== null && levelText !== undefined
+                ? `<div style="display:flex;justify-content:center;gap:8px;align-items:center;margin-bottom:10px;">
+                        <span class="lda-big-lvl" style="font-size:18px;line-height:1;">Lv.${String(levelText)}</span>
+                   </div>`
+                : '';
 
-            try {
-                if (this.trustData && !forceFetch && !this.isExpired('trust')) {
-                    this.renderTrust(this.trustData);
-                    this.stopRefreshWithMinDuration('trust');
-                    endWait();
-                    return;
-                }
-                if (this.trustData) this.renderTrust(this.trustData);
+            const leftBtnHtml = leftUrl
+                ? `<a href="${leftUrl}" target="_blank" rel="noopener"
+                        class="lda-auth-btn secondary" id="btn-go-${page}">
+                        ${leftText || this.t('link_tip')} →
+                   </a>`
+                : '';
 
-                // ===== 先获取用户信息确定信任等级 =====
-                username = Utils.getCurrentUsername();
-                let userInfo = null;
-                
-                if (username) {
-                    userInfo = await Utils.fetchUserInfo(username);
-                    if (userInfo) {
-                        userTrustLevel = userInfo.trust_level;
-                        this.ensureUserSig(this.makeUserSig({ username: userInfo.username }));
-                    }
-                }
+            wrap.innerHTML = `
+                <div class="lda-card lda-auth-card">
+                    <div class="lda-auth-icon">
+                        <svg viewBox="0 0 24 24" width="48" height="48">
+                            <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+                        </svg>
+                    </div>
+                    ${lvlHtml}
+                    <div class="lda-auth-title">${title}</div>
+                    <div class="lda-auth-tip">${tip}</div>
+                    <div class="lda-auth-btns">
+                        ${leftBtnHtml}
+                        <button class="lda-auth-btn" id="btn-retry-${page}">${this.t('network_error_retry')}</button>
+                    </div>
+                </div>
+            `;
 
-                // 并行获取排名数据
-                const statsPromise = Utils.fetchForumStats();
+            const retryBtn = Utils.el(`#btn-retry-${page}`, wrap);
+            if (retryBtn) retryBtn.onclick = (e) => {
+                e.stopPropagation();
+                onRetry?.();
+            };
 
-                // ===== 根据信任等级选择数据获取策略 =====
-                let trustData = null;
-                let dataSource = null; // 'connect' | 'summary'
-                let isFallback = false; // 是否为降级数据
-                
-                if (userTrustLevel !== null && userTrustLevel <= 1) {
-                    // 0-1级用户：使用 summary.json + 硬编码要求
-                    trustData = await this.fetchLowLevelTrustData(username, userTrustLevel);
-                    dataSource = 'summary';
-                } else {
-                    // 2级及以上或无法确定等级：优先使用 connect.linux.do
-                    try {
-                        trustData = await this.fetchHighLevelTrustData(userTrustLevel);
-                        dataSource = 'connect';
-                    } catch (connectErr) {
-                        // connect 失败，尝试降级到 summary
-                        if (connectErr?.message !== 'NeedLogin' && connectErr?.status !== 401 && username) {
-                            try {
-                                trustData = await this.fetchLowLevelTrustData(username, userTrustLevel);
-                                dataSource = 'summary';
-                                isFallback = true; // 标记为降级数据
-                            } catch (summaryErr) {
-                                // summary 也失败，抛出原始 connect 错误
-                                throw connectErr;
-                            }
-                        } else {
-                            throw connectErr;
-                        }
-                    }
-                }
-
-                const statsData = await statsPromise.then(forumStats => {
-                    if (forumStats?.personal?.user?.username) {
-                        this.ensureUserSig(this.makeUserSig({ username: forumStats.personal.user.username }));
-                    }
-                    return {
-                        dailyRank: forumStats?.dailyRank || null,
-                        globalRank: forumStats?.globalRank || null,
-                        score: forumStats?.score || null
-                    };
-                }).catch(() => null);
-
-                // 保存数据，包含数据来源信息
-                this.trustData = { 
-                    basic: trustData, 
-                    stats: statsData,
-                    dataSource: dataSource,
-                    isFallback: isFallback
-                };
-                this.renderTrust(this.trustData);
-                Utils.set(CONFIG.KEYS.CACHE_TRUST_DATA, this.trustData);
-                this.markFetch('trust');
-                if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
-
-            } catch (e) {
-                const isLogin = e?.message === 'NeedLogin' || e?.status === 401;
-
-                if (autoRetry && !isLogin) {
-                    this.focusFlags.trust = true;
-                    setTimeout(() => this.refreshTrust(false), 200);
-                    return;
-                }
-
-                if (isLogin) {
-                    // 未登录状态
-                    this.focusFlags.trust = true;
-                    wrap.innerHTML = `
-                        <div class="lda-card lda-auth-card">
-                            <div class="lda-auth-icon">
-                                <svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5L12 1m0 4a3 3 0 0 1 3 3 3 3 0 0 1-3 3 3 3 0 0 1-3-3 3 3 0 0 1 3-3m5.13 12c-1.21 1.85-3.02 3.24-5.13 3.92-2.11-.68-3.92-2.07-5.13-3.92-.34-.5-.63-1-.87-1.53 0-1.65 2.71-3 6-3s6 1.32 6 3c-.24.53-.53 1.03-.87 1.53Z"/></svg>
-                            </div>
-                            <div class="lda-auth-title">${this.t('trust_not_login')}</div>
-                            <div class="lda-auth-tip">${this.t('trust_login_tip')}</div>
-                            <div class="lda-auth-btns">
-                                <a href="${CONFIG.API.LINK_LOGIN}" target="_blank" class="lda-auth-btn">${this.t('trust_go_login')} →</a>
-                                <button id="btn-trust-refresh" class="lda-auth-btn secondary">${this.t('credit_refresh')}</button>
-                            </div>
-                        </div>
-                    `;
-                    Utils.el('#btn-trust-refresh', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshTrust(); };
-                    return;
-                }
-
-                // 网络错误或其他错误：传入等级信息
-                this.renderNetworkError(wrap, 'trust', () => this.refreshTrust(), { level: userTrustLevel });
-            } finally {
-                // 确保按钮至少旋转 1 秒
-                this.stopRefreshWithMinDuration('trust');
-                endWait();
-            }
+            const goBtn = Utils.el(`#btn-go-${page}`, wrap);
+            if (goBtn) goBtn.onclick = () => {
+                // 用户跳转出去再回来时刷新当页
+                this.focusFlags[page] = true;
+            };
         }
 
         // ===== 新增：刷新按钮状态管理 =====
@@ -1605,21 +1453,18 @@
         }
 
         stopRefreshWithMinDuration(page, minDuration = 1000) {
-            // 如果已经不在刷新状态且没有待处理的停止请求，直接返回（幂等性）
             if (!this.refreshingPages[page] && !this.refreshStopPending[page]) return;
-            
-            // 如果已经有待处理的停止请求，不重复设置
             if (this.refreshStopPending[page]) return;
-            
+
             const elapsed = Date.now() - (this.refreshStartTime[page] || 0);
             const remaining = Math.max(0, minDuration - elapsed);
-            
+
             const doStop = () => {
                 this.refreshingPages[page] = false;
                 this.refreshStopPending[page] = false;
                 this.setRefreshBtnLoading(page, false);
             };
-            
+
             if (remaining > 0) {
                 this.refreshStopPending[page] = true;
                 setTimeout(doStop, remaining);
@@ -1628,46 +1473,125 @@
             }
         }
 
-        // ===== 新增：0-1级用户数据获取（使用 summary.json + 硬编码要求）=====
+        // ===== 信任等级：Summary 快照（用于 lv2+ Connect 失败 fallback，以及 lv0-1 失败时的补救展示）=====
+        async fetchSummaryTrustSnapshot(username, levelNum) {
+            const summary = await Utils.fetchUserSummary(username);
+            if (!summary) throw new Error('SummaryError');
+
+            const fields = [
+                { key: 'days_visited', nameZh: '访问天数', nameEn: 'Days visited' },
+                { key: 'topics_entered', nameZh: '浏览的话题', nameEn: 'Topics entered' },
+                { key: 'posts_read_count', nameZh: '已读帖子', nameEn: 'Posts read' },
+                { key: 'likes_given', nameZh: '送出赞', nameEn: 'Likes given' },
+                { key: 'likes_received', nameZh: '获赞', nameEn: 'Likes received' },
+                { key: 'time_read', nameZh: '阅读时间', nameEn: 'Time read', unit: 'seconds' }
+            ];
+
+            const req = CONFIG.LEVEL_REQUIREMENTS[levelNum] || null;
+
+            const items = [];
+            let allPassed = true;
+            const newCache = {};
+
+            for (const f of fields) {
+                const displayName = this.state.lang === 'zh' ? f.nameZh : f.nameEn;
+                let currentRaw = summary[f.key] || 0;
+                let currentDisplay = String(currentRaw);
+
+                if (f.unit === 'seconds') currentDisplay = Utils.formatReadTime(currentRaw);
+
+                let target = null;
+                let targetDisplay = '-';
+                if (req?.[f.key]?.target !== undefined) {
+                    target = req[f.key].target;
+                    targetDisplay = (req[f.key].unit === 'seconds')
+                        ? Utils.formatReadTime(target)
+                        : String(target);
+                }
+
+                let isGood = null;
+                let pct = 0;
+
+                if (target !== null) {
+                    isGood = currentRaw >= target;
+                    pct = target > 0 ? Math.min((currentRaw / target) * 100, 100) : (isGood ? 100 : 0);
+                    if (!isGood) allPassed = false;
+                } else {
+                    // 无目标时：中性展示
+                    isGood = null;
+                    pct = 0;
+                }
+
+                const oldVal = this.state.trustCache[displayName];
+                let diff = 0;
+                if (typeof oldVal === 'number' && oldVal !== currentRaw) diff = currentRaw - oldVal;
+
+                newCache[displayName] = currentRaw;
+
+                items.push({
+                    name: displayName,
+                    current: currentDisplay,
+                    target: targetDisplay,
+                    isGood,
+                    pct,
+                    diff
+                });
+            }
+
+            // 仍然缓存当前值用于 diff（即使是 fallback）
+            this.state.trustCache = newCache;
+            Utils.set(CONFIG.KEYS.CACHE_TRUST, newCache);
+
+            return {
+                level: String(levelNum ?? '?'),
+                isPass: targetAny(req) ? allPassed : null,
+                items,
+                source: 'summary'
+            };
+
+            function targetAny(r) {
+                if (!r) return false;
+                return Object.values(r).some(x => x?.target !== undefined);
+            }
+        }
+
+        // ===== 0-1级用户数据获取（使用 summary.json + 硬编码要求）=====
         async fetchLowLevelTrustData(username, currentLevel) {
             const summary = await Utils.fetchUserSummary(username);
             if (!summary) throw new Error("ParseError");
-            
-            const targetLevel = currentLevel + 1; // 目标升级等级
+
             const requirements = CONFIG.LEVEL_REQUIREMENTS[currentLevel];
             if (!requirements) throw new Error("ParseError");
-            
+
             const items = [];
             const newCache = {};
             let allPassed = true;
-            
+
             for (const [key, req] of Object.entries(requirements)) {
                 let current = summary[key] || 0;
                 let target = req.target;
                 let currentDisplay = String(current);
-                
+
                 // 处理时间格式
                 if (req.unit === 'seconds') {
                     currentDisplay = Utils.formatReadTime(current);
-                    // 目标也转换为可读格式用于显示
                 }
-                
+
                 const isGood = current >= target;
                 if (!isGood) allPassed = false;
-                
+
                 const oldVal = this.state.trustCache[req.name];
                 let diff = 0;
                 if (typeof oldVal === 'number' && oldVal !== current) {
                     diff = current - oldVal;
                 }
-                
+
                 newCache[req.name] = current;
-                
+
                 let pct = target > 0 ? Math.min((current / target) * 100, 100) : (isGood ? 100 : 0);
-                
-                // 目标显示格式
+
                 let targetDisplay = req.unit === 'seconds' ? Utils.formatReadTime(target) : target;
-                
+
                 items.push({
                     name: req.name,
                     current: currentDisplay,
@@ -1677,25 +1601,26 @@
                     diff
                 });
             }
-            
+
             this.state.trustCache = newCache;
             Utils.set(CONFIG.KEYS.CACHE_TRUST, newCache);
-            
+
             return {
                 level: String(currentLevel),
                 isPass: allPassed,
-                items
+                items,
+                source: 'summary'
             };
         }
 
-        // ===== 新增：2级及以上用户数据获取（使用 connect.linux.do）=====
+        // ===== 2级及以上用户数据获取（使用 connect.linux.do）=====
         async fetchHighLevelTrustData(knownLevel = null) {
             const html = await Utils.request(CONFIG.API.TRUST);
             const doc = new DOMParser().parseFromString(html, 'text/html');
             const bodyText = doc.body?.textContent || '';
             const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
             const levelNode = Array.from(doc.querySelectorAll('h1, h2, h3')).find(x => /信任|trust/i.test(x.textContent));
-            
+
             if (!levelNode) {
                 const possibleTable = doc.querySelector('table');
                 if (loginHint || /登录|login|sign\s*in/i.test(bodyText)) throw new Error("NeedLogin");
@@ -1703,23 +1628,23 @@
             }
 
             const level = knownLevel !== null ? String(knownLevel) : levelNode.textContent.replace(/\D/g, '');
-            const isPass = levelNode.parentElement.querySelector('.text-green-500') !== null;
+            const isPass = levelNode?.parentElement?.querySelector?.('.text-green-500') !== null;
             const rows = Array.from(levelNode.parentElement.parentElement.querySelectorAll('tr')).slice(1);
             if (rows.length === 0) this.focusFlags.trust = true;
-            
+
             const items = [];
-            const newCache = {}; 
-            const seenNames = {}; 
+            const newCache = {};
+            const seenNames = {};
 
             rows.forEach(tr => {
                 const tds = tr.querySelectorAll('td');
                 if (tds.length < 3) return;
-                
+
                 let name = tds[0].textContent.trim().split('（')[0];
-                const current = parseFloat(tds[1].textContent.replace(/,/g, '')); 
+                const current = parseFloat(tds[1].textContent.replace(/,/g, ''));
                 const target = parseFloat(tds[2].textContent.replace(/,/g, ''));
                 const isGood = tds[1].classList.contains('text-green-500');
-                
+
                 if (seenNames[name]) {
                     name = name + ' (All)';
                 }
@@ -1732,9 +1657,9 @@
                 }
 
                 newCache[name] = current;
-                
+
                 let pct = 0;
-                if (target > 0) pct = Math.min((current/target)*100, 100);
+                if (target > 0) pct = Math.min((current / target) * 100, 100);
                 else if (isGood) pct = 100;
 
                 items.push({ name, current: tds[1].textContent.trim(), target, isGood, pct, diff });
@@ -1743,63 +1668,17 @@
             this.state.trustCache = newCache;
             Utils.set(CONFIG.KEYS.CACHE_TRUST, newCache);
 
-            return { level, isPass, items };
-        }
-
-
-        // ===== V3新增：友好错误UI渲染 =====
-        // V3改进：友好错误UI渲染（支持等级显示和链接按钮）
-        renderNetworkError(wrap, page, retryFn, options = {}) {
-            const { level = null, linkUrl = null, linkText = null } = options;
-            
-            // 根据页面类型设置默认链接
-            const defaultLinks = {
-                trust: { url: CONFIG.API.LINK_TRUST, text: 'Connect' },
-                credit: { url: CONFIG.API.LINK_CREDIT, text: 'Credit' },
-                cdk: { url: CONFIG.API.LINK_CDK, text: 'CDK' }
-            };
-            const link = linkUrl ? { url: linkUrl, text: linkText || 'Link' } : defaultLinks[page];
-            
-            // 等级显示HTML
-            const levelHtml = level !== null ? `<div style="font-size:16px;font-weight:700;color:var(--lda-accent);margin-bottom:8px;">Lv.${level}</div>` : '';
-            
-            // 按钮HTML（左边链接，右边刷新）
-            const btnsHtml = `
-                <div class="lda-auth-btns">
-                    ${link ? `<a href="${link.url}" target="_blank" class="lda-auth-btn">${link.text} →</a>` : ''}
-                    <button class="lda-error-btn" id="btn-retry-${page}">
-                        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
-                        ${this.t('network_error_retry')}
-                    </button>
-                </div>
-            `;
-            
-            wrap.innerHTML = `
-                <div class="lda-card lda-error-card">
-                    ${levelHtml}
-                    <div class="lda-error-icon">
-                        <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
-                    </div>
-                    <div class="lda-error-title">${this.t('network_error_title')}</div>
-                    <div class="lda-error-tip">${this.t('network_error_tip')}</div>
-                    ${btnsHtml}
-                </div>
-            `;
-            Utils.el(`#btn-retry-${page}`, wrap).onclick = (e) => {
-                e.stopPropagation();
-                retryFn();
-            };
-            this.focusFlags[page] = true;
+            return { level, isPass, items, source: 'connect' };
         }
 
         // 生成降级提示横幅HTML
         getFallbackBannerHtml() {
             return `
                 <div class="lda-fallback-banner">
-                    <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
                     <div class="lda-fallback-text">
-                        <strong>${this.t('trust_fallback_title')}</strong>
-                        <span style="opacity:0.8">${this.t('trust_fallback_tip')}</span>
+                        <strong>${this.t('trust_fallback_title')}</strong><br>
+                        ${this.t('trust_fallback_tip')}
                     </div>
                 </div>
             `;
@@ -1810,25 +1689,192 @@
             const sourceText = source === 'connect' ? 'Connect' : 'Summary';
             return `<span class="lda-source-tag">${this.t('trust_data_source')}: ${sourceText}</span>`;
         }
+
+        // ===================== 信任级别刷新（按你要求的状态机重构） =====================
+        async refreshTrust(arg = true) {
+            const base = { background: false, force: undefined, manual: false };
+            const opts = typeof arg === 'object' ? { ...base, ...arg } : { ...base, manual: !!arg, force: arg === false ? false : undefined };
+            const manual = opts.manual;
+            const forceFetch = opts.force ?? !opts.background;
+            const wrap = this.dom.trust;
+            const endWait = this.beginWait('trust');
+
+            // 旋转
+            this.refreshingPages.trust = true;
+            this.refreshStartTime.trust = Date.now();
+            this.setRefreshBtnLoading('trust', true);
+
+            if (!wrap.innerHTML || wrap.innerHTML.trim() === '') {
+                wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+            }
+
+            try {
+                if (this.trustData && !forceFetch && !this.isExpired('trust')) {
+                    this.renderTrust(this.trustData);
+                    this.stopRefreshWithMinDuration('trust');
+                    endWait();
+                    return;
+                }
+                if (this.trustData) this.renderTrust(this.trustData);
+
+                // ✅ 1) session/current.json：权威登录判定
+                const sessionUser = await Utils.fetchSessionUser();
+                if (!sessionUser?.username) {
+                    this.focusFlags.trust = true;
+                    wrap.innerHTML = `
+                        <div class="lda-card lda-auth-card">
+                            <div class="lda-auth-icon">
+                                <svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5L12 1m0 4a3 3 0 0 1 3 3 3 3 0 0 1-3 3 3 3 0 0 1-3-3 3 3 0 0 1 3-3m5.13 12c-1.21 1.85-3.02 3.24-5.13 3.92-2.11-.68-3.92-2.07-5.13-3.92-.34-.5-.63-1-.87-1.53 0-1.65 2.71-3 6-3s6 1.32 6 3c-.24.53-.53 1.03-.87 1.53Z"/></svg>
+                            </div>
+                            <div class="lda-auth-title">${this.t('trust_not_login')}</div>
+                            <div class="lda-auth-tip">${this.t('trust_login_tip')}</div>
+                            <div class="lda-auth-btns">
+                                <a href="${CONFIG.API.LINK_LOGIN}" target="_blank" class="lda-auth-btn" id="btn-go-login">${this.t('trust_go_login')} →</a>
+                                <button id="btn-trust-refresh" class="lda-auth-btn secondary">${this.t('credit_refresh')}</button>
+                            </div>
+                        </div>
+                    `;
+                    Utils.el('#btn-trust-refresh', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshTrust({ manual: true, force: true }); };
+                    const goLogin = Utils.el('#btn-go-login', wrap);
+                    if (goLogin) goLogin.onclick = () => { this.focusFlags.trust = true; };
+                    this.stopRefreshWithMinDuration('trust');
+                    endWait();
+                    return;
+                }
+
+                // ✅ 2) 已登录：拿 username + trust_level
+                const username = sessionUser.username || Utils.getCurrentUsername();
+                let userTrustLevel = Number.isFinite(sessionUser.trust_level) ? sessionUser.trust_level : null;
+                if (userTrustLevel === null && username) {
+                    const ui = await Utils.fetchUserInfo(username);
+                    userTrustLevel = ui?.trust_level ?? null;
+                }
+                const levelText = userTrustLevel ?? '?';
+                if (username) this.ensureUserSig(this.makeUserSig({ username }));
+
+                // 并行获取排名数据（失败不阻断）
+                const statsPromise = Utils.fetchForumStats().catch(() => null);
+
+                // ✅ 3) 状态机：
+                //  - lv0-1：summary 成功 => 正常；失败 => 友好错误 UI（显示具体等级）
+                //  - lv2+：connect 成功 => 正常；connect失败但summary成功 => fallback（提示+左connect右刷新）；都失败 => 友好错误 UI（左connect右刷新）
+                let basic = null;
+
+                if (userTrustLevel !== null && userTrustLevel <= 1) {
+                    try {
+                        basic = await this.fetchLowLevelTrustData(username, userTrustLevel);
+                        basic.ui = 'normal';
+                    } catch (_) {
+                        this.renderStateCard(wrap, 'trust', {
+                            title: this.t('network_error_title'),
+                            tip: this.t('network_error_tip'),
+                            levelText,
+                            leftUrl: null,
+                            onRetry: () => this.refreshTrust({ manual: true, force: true })
+                        });
+                        this.stopRefreshWithMinDuration('trust');
+                        endWait();
+                        return;
+                    }
+                } else {
+                    // lv2+ 先 connect
+                    try {
+                        basic = await this.fetchHighLevelTrustData(userTrustLevel);
+                        basic.ui = 'normal';
+                    } catch (e) {
+                        basic = null;
+                    }
+
+                    // connect 失败 => summary fallback
+                    if (!basic) {
+                        try {
+                            const snap = await this.fetchSummaryTrustSnapshot(username, userTrustLevel ?? 2);
+                            basic = {
+                                ...snap,
+                                ui: 'fallback',
+                                // 对齐字段
+                                isPass: snap.isPass
+                            };
+                        } catch (_) {
+                            // connect + summary 都失败 => 友好错误 UI
+                            this.renderStateCard(wrap, 'trust', {
+                                title: this.t('network_error_title'),
+                                tip: this.t('network_error_tip'),
+                                levelText,
+                                leftUrl: CONFIG.API.LINK_TRUST,
+                                leftText: this.t('connect_open'),
+                                onRetry: () => this.refreshTrust({ manual: true, force: true })
+                            });
+                            this.stopRefreshWithMinDuration('trust');
+                            endWait();
+                            return;
+                        }
+                    }
+                }
+
+                // ✅ 4) 合并 stats
+                const forumStats = await statsPromise;
+                const statsData = forumStats ? {
+                    dailyRank: forumStats.dailyRank || null,
+                    globalRank: forumStats.globalRank || null,
+                    score: forumStats.score || null
+                } : null;
+
+                // ✅ 5) 渲染并缓存
+                this.trustData = { basic, stats: statsData };
+                this.renderTrust(this.trustData);
+                Utils.set(CONFIG.KEYS.CACHE_TRUST_DATA, this.trustData);
+                this.markFetch('trust');
+                if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
+
+            } catch (e) {
+                // 最外层兜底：当作网络/环境错误，但尽量给 connect + refresh
+                this.renderStateCard(wrap, 'trust', {
+                    title: this.t('network_error_title'),
+                    tip: this.t('network_error_tip'),
+                    levelText: '?',
+                    leftUrl: CONFIG.API.LINK_TRUST,
+                    leftText: this.t('connect_open'),
+                    onRetry: () => this.refreshTrust({ manual: true, force: true })
+                });
+            } finally {
+                this.stopRefreshWithMinDuration('trust');
+                endWait();
+            }
+        }
+
         renderTrust(data) {
             const wrap = this.dom.trust;
             if (!data?.basic) {
                 wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
                 return;
             }
-            const { level, isPass, items } = data.basic;
+            const { level, isPass, items, source, ui } = data.basic;
             const stats = data.stats || {};
-            const isFallback = data.isFallback || false;
-            const dataSource = data.dataSource || 'connect';
-            
+            const isFallback = ui === 'fallback';
+            const showConnectLink = true;
+
             let statsHtml = '';
             if (stats.globalRank || stats.dailyRank || stats.score) {
-                statsHtml = `<a href="${CONFIG.API.LINK_LEADERBOARD}" target="_blank" class="lda-stats-bar">`;
+                statsHtml = `<a href="${CONFIG.API.LINK_LEADERBOARD}" target="_blank" class="lda-stats-bar" id="btn-go-leaderboard">`;
                 if (stats.dailyRank) statsHtml += `<span class="lda-stat-item">${this.t('rank_today')}: <span class="num today">${stats.dailyRank}</span></span>`;
                 if (stats.globalRank) statsHtml += `<span class="lda-stat-item">${this.t('rank')}: <span class="num rank">${stats.globalRank}</span></span>`;
-                if (stats.score) statsHtml += `<span class="lda-stat-item">${this.t('score')}: <span class="num score">${stats.score.toLocaleString()}</span></span>`;
+                if (stats.score) statsHtml += `<span class="lda-stat-item">${this.t('score')}: <span class="num score">${Number(stats.score).toLocaleString()}</span></span>`;
                 statsHtml += `</a>`;
             }
+
+            // 顶部动作区：正常用图标；fallback 用底部大按钮（但保留图标刷新更顺手）
+            let actionsHtml = `
+                <div class="lda-actions-group">
+                    ${showConnectLink ? `
+                    <a href="${CONFIG.API.LINK_TRUST}" target="_blank" class="lda-act-btn" title="${this.t('link_tip')}" id="btn-go-connect-icon">
+                        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+                    </a>` : ''}
+                    <div class="lda-act-btn" id="btn-re-trust" title="${this.t('refresh_tip_btn')}">
+                        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
+                    </div>
+                </div>
+            `;
 
             let listHtml = '';
             (items || []).forEach(it => {
@@ -1837,65 +1883,103 @@
                     if (it.diff > 0) diffHtml = `<span class="lda-diff up">▲${it.diff}</span>`;
                     else if (it.diff < 0) diffHtml = `<span class="lda-diff down">▼${Math.abs(it.diff)}</span>`;
                 }
-                listHtml += `
+
+                // isGood: true/false/null
+                let valColor = 'var(--lda-fg)';
+                let fillColor = 'var(--lda-neutral)';
+                let pct = Number(it.pct) || 0;
+
+                if (it.isGood === true) { valColor = 'var(--lda-green)'; fillColor = 'var(--lda-green)'; }
+                else if (it.isGood === false) { valColor = 'var(--lda-red)'; fillColor = 'var(--lda-red)'; }
+                else { // null => neutral
+                    valColor = 'var(--lda-fg)';
+                    fillColor = 'var(--lda-neutral)';
+                    pct = 100; // 中性条显示为满，但颜色更淡（表示仅展示统计，无“达标”含义）
+                }
+
+                listHtml += Utils.html`
                     <div class="lda-item">
                         <div class="lda-item-top">
                             <span class="lda-i-name">${it.name}</span>
-                            <span class="lda-i-val" style="color:${it.isGood?'var(--lda-green)':'var(--lda-red)'}">
-                                ${it.current} ${diffHtml} <span style="color:var(--lda-dim);font-weight:400;margin-left:4px">/ ${it.target||'-'}</span>
+                            <span class="lda-i-val" style="color:${valColor}">
+                                ${it.current} ${diffHtml}
+                                <span style="color:var(--lda-dim);font-weight:400;margin-left:4px">/ ${it.target ?? '-'}</span>
                             </span>
                         </div>
-                        <div class="lda-progress"><div class="lda-fill" style="width:${it.pct}%; background:${it.isGood?'var(--lda-green)':'var(--lda-red)'}"></div></div>
+                        <div class="lda-progress"><div class="lda-fill" style="width:${pct}%; background:${fillColor}"></div></div>
                     </div>
                 `;
             });
 
-            // 降级提示横幅（当 Lv2+ 用户获取 connect 失败但获取到 summary 时显示）
-            const fallbackBannerHtml = isFallback ? this.getFallbackBannerHtml() : '';
+            const bannerHtml = isFallback ? this.getFallbackBannerHtml() : '';
+            const sourceTag = this.getSourceTagHtml(source || 'connect');
 
-            wrap.innerHTML = `
+            const badgeHtml = isFallback
+                ? `<span class="lda-badge neutral">${this.t('status_fallback')}</span>`
+                : `<span class="lda-badge ${(isPass === true) ? 'ok' : 'no'}">${(isPass === true) ? this.t('status_ok') : this.t('status_fail')}</span>`;
+
+            const fallbackBtns = isFallback ? `
+                <div class="lda-auth-btns" style="margin-top:14px;">
+                    <a href="${CONFIG.API.LINK_TRUST}" target="_blank" rel="noopener"
+                        class="lda-auth-btn secondary" id="btn-go-connect">${this.t('connect_open')} →</a>
+                    <button class="lda-auth-btn" id="btn-retry-trust">${this.t('network_error_retry')}</button>
+                </div>
+            ` : '';
+
+            wrap.innerHTML = Utils.html`
                 <div class="lda-card">
-                    <div class="lda-actions-group">
-                        <a href="${CONFIG.API.LINK_TRUST}" target="_blank" class="lda-act-btn" title="${this.t('link_tip')}">
-                            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
-                        </a>
-                        <div class="lda-act-btn" id="btn-re-trust" title="${this.t('refresh_tip')}">
-                            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
-                        </div>
-                    </div>
-                    ${fallbackBannerHtml}
+                    ${actionsHtml}
                     <div class="lda-info-header">
                         <div class="lda-lvl-group">
                             <span class="lda-big-lvl">Lv.${level}</span>
-                            <span class="lda-badge ${isPass?'ok':'no'}">${isPass ? this.t('status_ok') : this.t('status_fail')}</span>
+                            ${badgeHtml}
+                            ${sourceTag}
                         </div>
                     </div>
+                    ${bannerHtml}
                     ${statsHtml}
                     ${listHtml}
+                    ${fallbackBtns}
                 </div>
             `;
-            Utils.el('#btn-re-trust', wrap).onclick = (e) => { e.stopPropagation(); this.refreshTrust({ manual: true, force: true }); };
+
+            // 绑定按钮
+            const goIcon = Utils.el('#btn-go-connect-icon', wrap);
+            if (goIcon) goIcon.onclick = () => { this.focusFlags.trust = true; };
+
+            Utils.el('#btn-re-trust', wrap).onclick = (e) => {
+                e.stopPropagation();
+                this.refreshTrust({ manual: true, force: true });
+            };
+
+            const goBtn = Utils.el('#btn-go-connect', wrap);
+            if (goBtn) goBtn.onclick = () => { this.focusFlags.trust = true; };
+
+            const retry = Utils.el('#btn-retry-trust', wrap);
+            if (retry) retry.onclick = (e) => {
+                e.stopPropagation();
+                this.refreshTrust({ manual: true, force: true });
+            };
+
             // 如果正在刷新或等待延迟停止，保持按钮旋转状态
             if (this.refreshingPages.trust || this.refreshStopPending.trust) {
                 this.setRefreshBtnLoading('trust', true);
             }
         }
 
+        // ===================== 积分刷新：按你要求的状态机 =====================
         async refreshCredit(arg = true) {
-            const base = { background: false, force: undefined, autoRetry: true, manual: false };
-            const opts = typeof arg === 'object' ? { ...base, ...arg } : { ...base, autoRetry: !!arg, force: arg === false ? false : undefined };
-            const autoRetry = opts.autoRetry;
+            const base = { background: false, force: undefined, manual: false, autoRetry: true };
+            const opts = typeof arg === 'object' ? { ...base, ...arg } : { ...base, manual: !!arg, force: arg === false ? false : undefined };
             const manual = opts.manual;
             const forceFetch = opts.force ?? !opts.background;
             const wrap = this.dom.credit;
             const endWait = this.beginWait('credit');
-            
-            // 设置刷新状态并开始按钮旋转
+
             this.refreshingPages.credit = true;
             this.refreshStartTime.credit = Date.now();
             this.setRefreshBtnLoading('credit', true);
-            
-            // 确保显示加载提示
+
             if (!wrap.innerHTML || wrap.innerHTML.trim() === '') {
                 wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
             }
@@ -1933,16 +2017,8 @@
                 this.stopRefreshWithMinDuration('credit');
                 if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
                 endWait();
-            } catch(e) {
-                const isLogin = e?.status === 401 || /unauthorized|not\s*login/i.test(e?.responseText || '');
-
-                if (autoRetry && !isLogin) {
-                    this.stopRefreshWithMinDuration('credit');
-                    this.focusFlags.credit = true;
-                    setTimeout(() => this.refreshCredit(false), 200);
-                    endWait();
-                    return;
-                }
+            } catch (e) {
+                const isLogin = e?.status === 401 || e?.status === 403 || /unauthorized|not\s*login/i.test(e?.responseText || '');
 
                 if (isLogin) {
                     this.stopRefreshWithMinDuration('credit');
@@ -1955,17 +2031,27 @@
                             <div class="lda-auth-title">${this.t('credit_not_auth')}</div>
                             <div class="lda-auth-tip">${this.t('credit_auth_tip')}</div>
                             <div class="lda-auth-btns">
-                                <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-auth-btn">${this.t('credit_go_auth')} →</a>
+                                <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-auth-btn" id="btn-go-credit">${this.t('credit_go_auth')} →</a>
                                 <button id="btn-credit-refresh" class="lda-auth-btn secondary">${this.t('credit_refresh')}</button>
                             </div>
                         </div>
                     `;
-                    Utils.el('#btn-credit-refresh', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshCredit(); };
+                    Utils.el('#btn-credit-refresh', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshCredit({ manual: true, force: true }); };
+                    const go = Utils.el('#btn-go-credit', wrap);
+                    if (go) go.onclick = () => { this.focusFlags.credit = true; };
                     endWait();
                     return;
                 }
 
-                this.renderNetworkError(wrap, 'credit', () => this.refreshCredit());
+                // ✅ 其他失败：友好网络错误 UI（左Credit右刷新）
+                this.renderStateCard(wrap, 'credit', {
+                    title: this.t('network_error_title'),
+                    tip: this.t('network_error_tip'),
+                    leftUrl: CONFIG.API.LINK_CREDIT,
+                    leftText: this.t('credit_open'),
+                    onRetry: () => this.refreshCredit({ manual: true, force: true })
+                });
+
                 this.stopRefreshWithMinDuration('credit');
                 endWait();
             }
@@ -1980,24 +2066,24 @@
             }
             const stats = data.stats || [];
             let listHtml = '';
-            if(stats.length === 0) {
+            if (stats.length === 0) {
                 listHtml = `<div style="text-align:center;padding:12px;color:var(--lda-dim);font-size:12px">${this.t('no_rec')}</div>`;
             } else {
                 [...stats].reverse().forEach(x => {
-                    const date = x.date.slice(5).replace('-','/');
+                    const date = x.date.slice(5).replace('-', '/');
                     const inc = parseFloat(x.income);
                     const exp = parseFloat(x.expense);
-                    if(inc > 0) listHtml += `<div class="lda-row-rec"><span>${date} ${this.t('income')}</span><span class="lda-amt" style="color:var(--lda-red)">+${inc}</span></div>`;
-                    if(exp > 0) listHtml += `<div class="lda-row-rec"><span>${date} ${this.t('expense')}</span><span class="lda-amt" style="color:var(--lda-green)">-${exp}</span></div>`;
+                    if (inc > 0) listHtml += `<div class="lda-row-rec"><span>${date} ${this.t('income')}</span><span class="lda-amt" style="color:var(--lda-red)">+${inc}</span></div>`;
+                    if (exp > 0) listHtml += `<div class="lda-row-rec"><span>${date} ${this.t('expense')}</span><span class="lda-amt" style="color:var(--lda-green)">-${exp}</span></div>`;
                 });
             }
             wrap.innerHTML = Utils.html`
                 <div class="lda-card">
                     <div class="lda-actions-group">
-                        <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-act-btn" title="${this.t('link_tip')}">
+                        <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-act-btn" title="${this.t('link_tip')}" id="btn-go-credit-icon">
                             <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
                         </a>
-                        <div class="lda-act-btn" id="btn-re-credit" title="${this.t('refresh_tip')}">
+                        <div class="lda-act-btn" id="btn-re-credit" title="${this.t('refresh_tip_btn')}">
                             <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
                         </div>
                     </div>
@@ -2013,12 +2099,16 @@
                 </div>
             `;
             Utils.el('#btn-re-credit', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCredit({ manual: true, force: true }); };
-            // 如果正在刷新或等待延迟停止，保持按钮旋转状态
+
+            const goIcon = Utils.el('#btn-go-credit-icon', wrap);
+            if (goIcon) goIcon.onclick = () => { this.focusFlags.credit = true; };
+
             if (this.refreshingPages.credit || this.refreshStopPending.credit) {
                 this.setRefreshBtnLoading('credit', true);
             }
         }
 
+        // ===================== CDK 刷新：按你要求的状态机 =====================
         async refreshCDK(arg = true) {
             const base = { background: false, force: undefined, manual: false };
             const opts = typeof arg === 'object' ? { ...base, ...arg } : { ...base, manual: !!arg, force: arg === false ? false : undefined };
@@ -2026,17 +2116,15 @@
             const wrap = this.dom.cdk;
             const endWait = this.beginWait('cdk');
 
-            // 设置刷新状态并开始按钮旋转
             this.refreshingPages.cdk = true;
             this.refreshStartTime.cdk = Date.now();
             this.setRefreshBtnLoading('cdk', true);
 
-            // 确保显示加载提示
             if (!wrap.innerHTML || wrap.innerHTML.trim() === '') {
                 wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
             }
 
-            // 如果有新鲜缓存，先展示，避免空白
+            // 先展示新鲜缓存
             if (this.isCDKCacheFresh()) {
                 this.renderCDKContent(this.cdkCache.data);
                 if (!opts.force && !this.isExpired('cdk')) {
@@ -2046,7 +2134,10 @@
                 }
             }
 
-            // 主请求（GM），Tampermonkey 可能失败
+            let directErr = null;
+            let bridgeErr = null;
+
+            // direct
             try {
                 const info = await this.fetchCDKDirect();
                 this.cacheCDKData(info);
@@ -2058,9 +2149,11 @@
                 if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
                 endWait();
                 return;
-            } catch (_) {}
+            } catch (e) {
+                directErr = e;
+            }
 
-            // 兜底：通过隐形 iframe 在首方域取数（解决 GM 不带 cookie）
+            // bridge
             try {
                 const info = await this.fetchCDKViaBridge();
                 this.cacheCDKData(info);
@@ -2072,17 +2165,42 @@
                 if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
                 endWait();
                 return;
-            } catch (_) {
-                this.stopRefreshWithMinDuration('cdk');
-                // 如果已经展示了缓存，就不覆盖为未授权提示
-                if (this.isCDKCacheFresh()) {
-                    endWait();
-                    return;
-                }
-                this.focusFlags.cdk = true;
+            } catch (e) {
+                bridgeErr = e;
+            }
+
+            this.stopRefreshWithMinDuration('cdk');
+
+            // 如果已有缓存，就保持缓存，不覆盖为错误/未登录
+            if (this.isCDKCacheFresh()) {
+                endWait();
+                return;
+            }
+
+            const isAuthLike = (err) => {
+                if (!err) return false;
+                if (err?.status === 401 || err?.status === 403) return true;
+                const msg = String(err?.message || '');
+                return /unauthorized|401|403|forbidden/i.test(msg);
+            };
+
+            // ✅ 状态机：未登录/未授权 vs 其他失败
+            if (isAuthLike(directErr)) {
                 this.renderCDKAuth();
                 endWait();
+                return;
             }
+
+            // ✅ 其他失败：友好网络错误 UI（左CDK右刷新）
+            this.renderStateCard(wrap, 'cdk', {
+                title: this.t('network_error_title'),
+                tip: this.t('network_error_tip'),
+                leftUrl: CONFIG.API.LINK_CDK,
+                leftText: this.t('cdk_open'),
+                onRetry: () => this.refreshCDK({ manual: true, force: true })
+            });
+
+            endWait();
         }
 
         refreshOnFocusIfNeeded() {
@@ -2090,15 +2208,15 @@
             const flags = this.focusFlags;
             if (flags.trust) {
                 flags.trust = false;
-                this.refreshTrust();
+                this.refreshTrust({ force: true });
             }
             if (flags.credit) {
                 flags.credit = false;
-                this.refreshCredit();
+                this.refreshCredit({ force: true });
             }
             if (flags.cdk) {
                 flags.cdk = false;
-                this.refreshCDK();
+                this.refreshCDK({ force: true });
             }
         }
 
@@ -2112,9 +2230,10 @@
             if (minutes <= 0) return;
             const interval = minutes * 60 * 1000;
             this.autoRefreshTimer = setInterval(() => {
-                this.refreshTrust(false);
-                this.refreshCredit(false);
-                this.refreshCDK();
+                // 只要面板开着，就可后台刷新（原逻辑：beginWait 会控制提示）
+                this.refreshTrust({ background: true, force: false });
+                this.refreshCredit({ background: true, force: false });
+                this.refreshCDK({ background: true, force: false });
             }, interval || AUTO_REFRESH_MS);
         }
 
@@ -2151,7 +2270,7 @@
                 this.cdkWaiters.push(done);
                 try {
                     this.cdkBridgeFrame?.contentWindow?.postMessage({ type: 'lda-cdk-request' }, CDK_BRIDGE_ORIGIN);
-                } catch (_) {}
+                } catch (_) { }
             });
         }
 
@@ -2188,10 +2307,10 @@
             wrap.innerHTML = Utils.html`
                 <div class="lda-card">
                     <div class="lda-actions-group">
-                        <a href="${CONFIG.API.LINK_CDK}" target="_blank" class="lda-act-btn" title="${this.t('link_tip')}">
+                        <a href="${CONFIG.API.LINK_CDK}" target="_blank" class="lda-act-btn" title="${this.t('link_tip')}" id="btn-go-cdk-icon">
                             <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
                         </a>
-                        <div class="lda-act-btn" id="btn-re-cdk" title="${this.t('refresh_tip')}">
+                        <div class="lda-act-btn" id="btn-re-cdk" title="${this.t('refresh_tip_btn')}">
                             <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
                         </div>
                     </div>
@@ -2218,7 +2337,10 @@
                 </div>
             `;
             Utils.el('#btn-re-cdk', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCDK({ manual: true, force: true }); };
-            // 如果正在刷新或等待延迟停止，保持按钮旋转状态
+
+            const goIcon = Utils.el('#btn-go-cdk-icon', wrap);
+            if (goIcon) goIcon.onclick = () => { this.focusFlags.cdk = true; };
+
             if (this.refreshingPages.cdk || this.refreshStopPending.cdk) {
                 this.setRefreshBtnLoading('cdk', true);
             }
@@ -2235,12 +2357,14 @@
                     <div class="lda-auth-title">${this.t('cdk_not_auth')}</div>
                     <div class="lda-auth-tip">${this.t('cdk_auth_tip')}</div>
                     <div class="lda-auth-btns">
-                        <a href="${CONFIG.API.LINK_CDK}" target="_blank" class="lda-auth-btn">${this.t('cdk_go_auth')} →</a>
+                        <a href="${CONFIG.API.LINK_CDK}" target="_blank" class="lda-auth-btn" id="btn-go-cdk">${this.t('cdk_go_auth')} →</a>
                         <button id="btn-cdk-refresh" class="lda-auth-btn secondary">${this.t('cdk_refresh')}</button>
                     </div>
                 </div>
             `;
-            Utils.el('#btn-cdk-refresh', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCDK(); };
+            Utils.el('#btn-cdk-refresh', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCDK({ manual: true, force: true }); };
+            const go = Utils.el('#btn-go-cdk', wrap);
+            if (go) go.onclick = () => { this.focusFlags.cdk = true; };
         }
 
         togglePanel(show) {
@@ -2254,7 +2378,7 @@
                 if (!this.dom.panel.dataset.loaded || needTrust || needCredit || needCDK) {
                     this.refreshTrust({ force: needTrust });
                     this.refreshCredit({ force: needCredit });
-                    this.refreshCDK();
+                    this.refreshCDK({ force: needCDK });
                     this.dom.panel.dataset.loaded = '1';
                 }
                 this.refreshSlowTipForPage(this.activePage);
@@ -2277,7 +2401,6 @@
             this.dom.root.classList.toggle('lda-side-right', side === 'right');
             this.dom.root.classList.toggle('lda-side-left', side === 'left');
 
-            // 防止拖拽或窗口缩放后位置超出视口
             const clampedLeft = Math.min(Math.max(rect.left, 0), Math.max(0, window.innerWidth - rootWidth));
             const clampedTop = Math.min(Math.max(rect.top, 0), Math.max(0, window.innerHeight - 50));
             this.dom.root.style.right = Math.max(0, window.innerWidth - clampedLeft - rootWidth) + 'px';
@@ -2312,19 +2435,18 @@
 
         initDrag() {
             let isDrag = false, hasDragged = false, startX, startY, startR, startT;
-            
+
             const onMove = (e) => {
                 if (!isDrag) return;
                 const dx = e.clientX - startX;
                 const dy = e.clientY - startY;
-                // 移动超过 5px 才算拖动
                 if (Math.abs(dx) > 5 || Math.abs(dy) > 5) hasDragged = true;
                 requestAnimationFrame(() => {
                     this.dom.root.style.right = Math.max(0, startR - dx) + 'px';
                     this.dom.root.style.top = Math.max(0, Math.min(startT + dy, window.innerHeight - 50)) + 'px';
                 });
             };
-            
+
             const onUp = () => {
                 if (isDrag) {
                     isDrag = false;
@@ -2336,9 +2458,9 @@
                     this.updatePanelSide();
                 }
             };
-            
+
             const startDrag = (e, target) => {
-                if (e.button !== 0) return; // 只响应左键
+                if (e.button !== 0) return;
                 if (target === this.dom.head && e.target.closest('.lda-icon-btn')) return;
                 isDrag = true;
                 hasDragged = false;
@@ -2352,11 +2474,9 @@
                 document.addEventListener('mouseup', onUp);
                 e.preventDefault();
             };
-            
-            // 悬浮球拖动
+
             this.dom.ball.onmousedown = (e) => startDrag(e, this.dom.ball);
-            
-            // 悬浮球点击（区分拖动和点击）
+
             this.dom.ball.onclick = (e) => {
                 if (hasDragged) {
                     hasDragged = false;
@@ -2365,8 +2485,7 @@
                 }
                 this.togglePanel(true);
             };
-            
-            // 面板头部拖动
+
             this.dom.head.onmousedown = (e) => startDrag(e, this.dom.head);
         }
 
@@ -2386,20 +2505,19 @@
             if (isAuto && !force) {
                 if (now - (this.lastSkipUpdate || 0) < ONE_HOUR) return;
             }
-            
-            if (btn?.classList.contains('lda-spin')) return; // 防止重复点击
+
+            if (btn?.classList.contains('lda-spin')) return;
             btn?.classList.add('lda-spin');
-            
+
             try {
                 const res = await Utils.request(updateUrl);
                 const match = res.match(/@version\s+([\d.]+)/);
                 if (!match) throw new Error('Parse error');
-                
+
                 const remote = match[1];
                 const current = GM_info.script.version;
-                
+
                 if (this.compareVersion(remote, current) > 0) {
-                    // 有新版本，显示提示
                     this.showUpdatePrompt(remote, updateUrl);
                 } else if (!isAuto) {
                     this.showToast(`✓ ${this.t('latest')} (v${current})`, 'success');
@@ -2407,7 +2525,7 @@
             } catch (e) {
                 if (!isAuto) this.showToast(this.t('update_err'), 'error');
             }
-            
+
             btn?.classList.remove('lda-spin');
             Utils.set(CONFIG.KEYS.LAST_AUTO_CHECK, now);
             this.lastAutoCheck = now;
@@ -2428,37 +2546,6 @@
             setTimeout(() => toast.remove(), 2500);
         }
 
-        showConfirm(message, onOk) {
-            const host = this.dom?.panel || document.body;
-            const existing = Utils.el('#lda-confirm-mask', host);
-            if (existing) existing.remove();
-            const mask = document.createElement('div');
-            mask.id = 'lda-confirm-mask';
-            mask.style.cssText = `
-                position:absolute; inset:0; background:rgba(0,0,0,0.15); z-index:1000000;
-                display:flex; align-items:center; justify-content:center;
-            `;
-            const box = document.createElement('div');
-            box.style.cssText = `
-                background:var(--lda-bg); color:var(--lda-fg); border:1px solid var(--lda-border);
-                border-radius:10px; padding:16px 18px; min-width:240px; box-shadow:0 8px 24px rgba(0,0,0,0.2);
-            `;
-            box.innerHTML = `
-                <div style="font-size:13px; margin-bottom:12px;">${message}</div>
-                <div style="display:flex; gap:8px; justify-content:flex-end;">
-                    <button id="lda-confirm-cancel" style="padding:8px 12px; border:1px solid var(--lda-border); background:var(--lda-bg); border-radius:8px; cursor:pointer;">取消</button>
-                    <button id="lda-confirm-ok" style="padding:8px 12px; border:none; background:var(--lda-accent); color:#fff; border-radius:8px; cursor:pointer;">确认</button>
-                </div>
-            `;
-            mask.appendChild(box);
-            host.appendChild(mask);
-            const dispose = () => mask.remove();
-            box.querySelector('#lda-confirm-cancel').onclick = (e) => { e.stopPropagation(); dispose(); };
-            box.querySelector('#lda-confirm-ok').onclick = (e) => { e.stopPropagation(); dispose(); onOk?.(); };
-            mask.onclick = dispose;
-            box.onclick = (e) => e.stopPropagation();
-        }
-        
         showUpdatePrompt(version, url) {
             const host = this.dom?.panel || document.body;
             const existing = Utils.el('#lda-update-mask', host);
@@ -2485,17 +2572,17 @@
             mask.appendChild(box);
             host.appendChild(mask);
             const dispose = () => mask.remove();
-            box.querySelector('#lda-update-go').onclick = (e) => { 
-                e.stopPropagation(); 
-                try { window.open(url, '_blank'); } catch(_) {}
-                dispose(); 
+            box.querySelector('#lda-update-go').onclick = (e) => {
+                e.stopPropagation();
+                try { window.open(url, '_blank'); } catch (_) { }
+                dispose();
             };
-            box.querySelector('#lda-update-skip').onclick = (e) => { 
-                e.stopPropagation(); 
+            box.querySelector('#lda-update-skip').onclick = (e) => {
+                e.stopPropagation();
                 const now = Date.now();
                 this.lastSkipUpdate = now;
                 Utils.set(CONFIG.KEYS.LAST_SKIP_UPDATE, now);
-                dispose(); 
+                dispose();
             };
             mask.onclick = dispose;
             box.onclick = (e) => e.stopPropagation();
