@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      2.1.0
-// @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数
+// @version      2.3.0
+// @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
 // @match        https://cdk.linux.do/*
@@ -37,7 +37,26 @@
             LINK_LEADERBOARD: 'https://linux.do/leaderboard/1',
             CDK_INFO: 'https://cdk.linux.do/api/v1/oauth/user-info',
             LINK_CDK: 'https://cdk.linux.do/dashboard',
-            LINK_LOGIN: 'https://linux.do/login'
+            LINK_LOGIN: 'https://linux.do/login',
+            // 新增：用于获取用户信息和summary的API
+            USER_INFO: (username) => `https://linux.do/u/${username}.json`,
+            USER_SUMMARY: (username) => `https://linux.do/u/${username}/summary.json`
+        },
+        // 0-1级用户升级要求（硬编码）
+        LEVEL_REQUIREMENTS: {
+            0: { // 0级升1级
+                topics_entered: { name: '浏览的话题', target: 5 },
+                posts_read_count: { name: '已读帖子', target: 30 },
+                time_read: { name: '阅读时间', target: 600, unit: 'seconds' } // 10分钟
+            },
+            1: { // 1级升2级
+                days_visited: { name: '访问天数', target: 15 },
+                likes_given: { name: '送出赞', target: 1 },
+                likes_received: { name: '获赞', target: 1 },
+                topics_entered: { name: '浏览的话题', target: 20 },
+                posts_read_count: { name: '已读帖子', target: 100 },
+                time_read: { name: '阅读时间', target: 3600, unit: 'seconds' } // 60分钟
+            }
         },
         // 保持 v4 键名以维持配置
         KEYS: {
@@ -131,7 +150,14 @@
             slow_tip: "请求有点慢，稍等我处理一下…",
             clear_cache: "清除缓存",
             clear_cache_tip: "清除跨标签页缓存与账号关联数据",
-            clear_cache_done: "缓存已清空"
+            clear_cache_done: "缓存已清空",
+            // V3新增：友好错误提示
+            network_error_title: "暂时无法获取数据",
+            network_error_tip: "可能是网络波动或运行环境问题，请稍后重试",
+            network_error_retry: "点击刷新",
+            trust_fallback_title: "Connect 数据暂不可用",
+            trust_fallback_tip: "已显示 Summary 数据，完整数据请稍后刷新",
+            trust_data_source: "数据来源"
         },
         en: {
             title: "Linux.do HUD",
@@ -201,7 +227,14 @@
             slow_tip: "It's a bit slow, please hold on…",
             clear_cache: "Clear cache",
             clear_cache_tip: "Remove cross-tab cache and user binding",
-            clear_cache_done: "Cache cleared"
+            clear_cache_done: "Cache cleared",
+            // V3 new: friendly error messages
+            network_error_title: "Unable to load data",
+            network_error_tip: "Network or environment issue, please try again later",
+            network_error_retry: "Refresh",
+            trust_fallback_title: "Connect data unavailable",
+            trust_fallback_tip: "Showing Summary data. Refresh for complete data",
+            trust_data_source: "Data source"
         }
     };
 
@@ -240,7 +273,86 @@
         static html(strings, ...values) { return strings.reduce((r, s, i) => r + s + (values[i] || ''), ''); }
         static el(s, p = document) { return p.querySelector(s); }
         static els(s, p = document) { return p.querySelectorAll(s); }
-        
+
+        // 获取当前登录用户名
+        static getCurrentUsername() {
+            // 方法1: 从 Discourse 全局对象获取
+            try {
+                const currentUser = window.Discourse?.User?.current?.() ||
+                                    window.Discourse?.currentUser ||
+                                    window.User?.current?.();
+                if (currentUser?.username) return currentUser.username;
+            } catch (e) {}
+
+            // 方法2: 从页面 meta 标签或 preload 数据获取
+            try {
+                const preloadData = document.getElementById('data-preloaded');
+                if (preloadData) {
+                    const data = JSON.parse(preloadData.dataset.preloaded);
+                    if (data?.currentUser) {
+                        const cu = JSON.parse(data.currentUser);
+                        if (cu?.username) return cu.username;
+                    }
+                }
+            } catch (e) {}
+
+            // 方法3: 从导航栏用户头像链接获取
+            try {
+                const avatarLink = document.querySelector('#current-user a[href*="/u/"]');
+                if (avatarLink) {
+                    const match = avatarLink.href.match(/\/u\/([^\/]+)/);
+                    if (match) return match[1];
+                }
+            } catch (e) {}
+
+            // 方法4: 从 localStorage 获取（Discourse 常用存储）
+            try {
+                const stored = localStorage.getItem('discourse_current_user');
+                if (stored) {
+                    const parsed = JSON.parse(stored);
+                    if (parsed?.username) return parsed.username;
+                }
+            } catch (e) {}
+
+            return null;
+        }
+
+        // 获取用户信息（含信任等级）- 使用同源请求更稳定
+        static async fetchUserInfo(username) {
+            if (!username) return null;
+            try {
+                const r = await fetch(CONFIG.API.USER_INFO(username), { credentials: 'include' });
+                if (!r.ok) return null;
+                const data = await r.json();
+                return data?.user || null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // 获取用户 summary 数据（0-1级用户专用）
+        static async fetchUserSummary(username) {
+            if (!username) return null;
+            try {
+                const r = await fetch(CONFIG.API.USER_SUMMARY(username), { credentials: 'include' });
+                if (!r.ok) return null;
+                const data = await r.json();
+                return data?.user_summary || null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // 格式化阅读时间（秒 -> 可读格式）
+        static formatReadTime(seconds) {
+            if (seconds < 60) return `${seconds}秒`;
+            const minutes = Math.floor(seconds / 60);
+            if (minutes < 60) return `${minutes}分钟`;
+            const hours = Math.floor(minutes / 60);
+            const remainMins = minutes % 60;
+            return remainMins > 0 ? `${hours}小时${remainMins}分` : `${hours}小时`;
+        }
+
         // 获取论坛排名数据
         static async fetchForumStats() {
             const baseUrl = window.location.origin;
@@ -267,22 +379,21 @@
                     fetchJson(CONFIG.API.LEADERBOARD_DAILY),
                     fetchJson(CONFIG.API.LEADERBOARD)
                 ]);
+                // 尝试从 leaderboard 获取积分
                 let score = global?.personal?.total_score || global?.personal?.score || null;
-                let username = global?.personal?.user?.username || daily?.personal?.user?.username || null;
+                // 如果没有积分，尝试从用户 API 获取
                 if (!score && global?.personal?.user?.username) {
-                    const uname = global.personal.user.username;
-                    const userInfo = await fetchJson(`${baseUrl}/u/${uname}.json`);
+                    const username = global.personal.user.username;
+                    const userInfo = await fetchJson(`${baseUrl}/u/${username}.json`);
                     score = userInfo?.user?.gamification_score || null;
-                    username = username || userInfo?.user?.username || null;
                 }
                 return {
                     dailyRank: daily?.personal?.position || null,
                     globalRank: global?.personal?.position || null,
-                    score: score,
-                    username
+                    score: score
                 };
             } catch (e) {
-                return { dailyRank: null, globalRank: null, score: null, username: null };
+                return { dailyRank: null, globalRank: null, score: null };
             }
         }
     }
@@ -350,7 +461,7 @@
         }
 
         #lda-root { position: fixed; z-index: var(--lda-z); font-family: var(--lda-font); font-size: 14px; user-select: none; color: var(--lda-fg); min-width: var(--lda-ball-size); min-height: var(--lda-ball-size); opacity: var(--lda-opacity); transition: opacity 0.2s ease; }
-        
+
         /* 悬浮球 */
         .lda-ball {
             position: relative;
@@ -405,7 +516,7 @@
         /* 导航 */
         .lda-tabs { display: flex; padding: 6px 16px 0; border-bottom: var(--lda-border); gap: 16px; }
         .lda-tab {
-            padding: 8px 0; font-size: 12px; cursor: pointer; color: var(--lda-dim); 
+            padding: 8px 0; font-size: 12px; cursor: pointer; color: var(--lda-dim);
             border-bottom: 2px solid transparent; transition: 0.2s; font-weight: 500;
         }
         .lda-tab:hover { color: var(--lda-fg); }
@@ -429,12 +540,12 @@
             background: rgba(125,125,125,0.03); border-radius: 10px; padding: 14px; margin-bottom: 12px;
             border: var(--lda-border); position: relative;
         }
-        
+
         /* 头部信息栏 & 动作按钮组 */
         .lda-info-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; min-height: 28px; }
         .lda-lvl-group { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding-right: 60px; /* 留出右侧按钮空间 */ }
         .lda-big-lvl { font-size: 20px; font-weight: 800; color: var(--lda-accent); line-height: 1; }
-        .lda-badge { 
+        .lda-badge {
             padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600;
             background: rgba(125,125,125,0.1); display: inline-block;
         }
@@ -469,7 +580,7 @@
         }
         .lda-act-btn:hover { color: var(--lda-accent); background: #fff; }
         .lda-dark .lda-act-btn:hover { background: rgba(255,255,255,0.1); }
-        
+
         /* 刷新按钮旋转逻辑 */
         .lda-act-btn.loading svg { animation: lda-spin 0.8s linear infinite; }
 
@@ -480,10 +591,10 @@
         .lda-i-val { font-family: 'SF Mono', monospace; font-weight: 600; display: flex; align-items: center; }
         .lda-progress { height: 5px; background: rgba(125,125,125,0.1); border-radius: 3px; overflow: hidden; }
         .lda-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease-out; }
-        
+
         /* 涨跌 Diff */
-        .lda-diff { 
-            font-size: 10px; padding: 1px 4px; border-radius: 4px; font-weight: 700; margin-left: 6px; 
+        .lda-diff {
+            font-size: 10px; padding: 1px 4px; border-radius: 4px; font-weight: 700; margin-left: 6px;
             display: inline-flex; align-items: center; height: 16px;
         }
         .lda-diff.up { color: var(--lda-red); background: rgba(239, 68, 68, 0.1); }
@@ -493,7 +604,7 @@
         .lda-credit-hero { text-align: center; padding: 20px 0; }
         .lda-credit-num { font-size: 28px; font-weight: 700; color: var(--lda-fg); font-family: monospace; letter-spacing: -1px; }
         .lda-credit-label { font-size: 11px; text-transform: uppercase; color: var(--lda-dim); margin-top: 4px; letter-spacing: 1px; }
-        
+
         .lda-row-rec { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed rgba(125,125,125,0.2); font-size: 12px; }
 
         /* Credit 授权提示卡片 */
@@ -519,7 +630,7 @@
         .lda-opt-label { font-size: 13px; font-weight: 500; }
         .lda-opt-right { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
         .lda-opt-sub { font-size: 12px; color: var(--lda-dim); }
-        
+
         .lda-switch { position: relative; width: 36px; height: 20px; display: inline-block; }
         .lda-switch input { opacity: 0; width: 0; height: 0; }
         .lda-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #cbd5e1; transition: .3s; border-radius: 20px; }
@@ -649,6 +760,101 @@
             font-size: 12px;
             border-radius: 8px;
         }
+
+        /* V3新增：友好错误提示卡片 */
+        .lda-error-card {
+            text-align: center;
+            padding: 28px 20px;
+            background: linear-gradient(135deg, rgba(125,125,125,0.02), rgba(125,125,125,0.05));
+            border-radius: 12px;
+            border: 1px dashed rgba(125,125,125,0.2);
+        }
+        .lda-error-icon {
+            width: 48px;
+            height: 48px;
+            margin: 0 auto 14px;
+            border-radius: 50%;
+            background: rgba(125,125,125,0.08);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--lda-dim);
+        }
+        .lda-error-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--lda-fg);
+            margin-bottom: 6px;
+        }
+        .lda-error-tip {
+            font-size: 12px;
+            color: var(--lda-dim);
+            margin-bottom: 18px;
+            line-height: 1.5;
+        }
+        .lda-error-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 10px 20px;
+            background: rgba(125,125,125,0.1);
+            color: var(--lda-fg);
+            border: 1px solid rgba(125,125,125,0.15);
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .lda-error-btn:hover {
+            background: rgba(125,125,125,0.15);
+            border-color: rgba(125,125,125,0.25);
+        }
+        .lda-error-btn svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        /* V3新增：降级提示横幅 */
+        .lda-fallback-banner {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 12px;
+            margin-bottom: 12px;
+            background: rgba(251, 191, 36, 0.1);
+            border: 1px solid rgba(251, 191, 36, 0.25);
+            border-radius: 8px;
+            font-size: 11px;
+            color: var(--lda-dim);
+        }
+        .lda-dark .lda-fallback-banner {
+            background: rgba(251, 191, 36, 0.08);
+            border-color: rgba(251, 191, 36, 0.2);
+        }
+        .lda-fallback-banner svg {
+            flex-shrink: 0;
+            width: 16px;
+            height: 16px;
+            color: #f59e0b;
+        }
+        .lda-fallback-text {
+            flex: 1;
+            line-height: 1.4;
+        }
+
+        /* V3新增：数据来源标签 */
+        .lda-source-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 8px;
+            background: rgba(125,125,125,0.08);
+            border-radius: 4px;
+            font-size: 10px;
+            color: var(--lda-dim);
+            margin-left: 8px;
+        }
     `;
 
     // 主程序
@@ -656,7 +862,7 @@
         constructor() {
             this.state = {
                 lang: Utils.get(CONFIG.KEYS.LANG, 'zh'),
-                theme: Utils.get(CONFIG.KEYS.THEME, 'auto'), 
+                theme: Utils.get(CONFIG.KEYS.THEME, 'auto'),
                 height: Utils.get(CONFIG.KEYS.HEIGHT, 'auto'), // Default: Auto
                 expand: Utils.get(CONFIG.KEYS.EXPAND, true),   // Default: True
                 trustCache: Utils.get(CONFIG.KEYS.CACHE_TRUST, {}),
@@ -683,6 +889,10 @@
                 credit: { count: 0, since: null, timer: null, slowShown: false },
                 cdk: { count: 0, since: null, timer: null, slowShown: false }
             };
+            // 新增：追踪各页面的刷新状态（用于按钮旋转动画）
+            this.refreshingPages = { trust: false, credit: false, cdk: false };
+            this.refreshStartTime = { trust: 0, credit: 0, cdk: 0 };
+            this.refreshStopPending = { trust: false, credit: false, cdk: false }; // 是否正在等待延迟停止
             this.dom = {};
         }
 
@@ -703,7 +913,7 @@
             this.prewarmAll();
             this.startAutoRefreshTimer();
             this.maybeAutoCheckUpdate();
-            
+
             if (this.state.expand || forceOpen) {
                 this.togglePanel(true);
             }
@@ -790,14 +1000,14 @@
             const r = (val, cur) => val === cur ? 'active' : '';
             const opacityVal = Math.max(0.5, Math.min(1, Number(opacity) || 1));
             const opacityPercent = Math.round(opacityVal * 100);
-            
+
             // 标签名称映射
             const tabNames = {
                 trust: this.t('tab_trust'),
                 credit: this.t('tab_credit'),
                 cdk: this.t('tab_cdk')
             };
-            
+
             // 生成排序项 HTML
             const sortItemsHtml = tabOrder.map((key, idx) => `
                 <div class="lda-sort-item" draggable="true" data-key="${key}">
@@ -808,7 +1018,7 @@
                     <span class="lda-sort-label">${tabNames[key]}</span>
                 </div>
             `).join('');
-            
+
             // 支持选项配置
             const supportTiers = [
                 { id: 1, amount: 2, icon: '☕', url: 'https://credit.linux.do/paying/online?token=01fdff1ae667a2625d225191717e3281c600218c2152340a4fcd56d7c4423579' },
@@ -899,15 +1109,15 @@
                     </div>
                 </div>
             `;
-            
+
             this.initSortable();
         }
-        
+
         initSortable() {
             const container = Utils.el('#sortable-tabs', this.dom.setting);
             const saveBtn = Utils.el('#btn-save-order', this.dom.setting);
             let draggedItem = null;
-            
+
             // 更新序号显示
             const updateNumbers = () => {
                 const items = container.querySelectorAll('.lda-sort-item');
@@ -915,7 +1125,7 @@
                     item.querySelector('.lda-sort-num').textContent = idx + 1;
                 });
             };
-            
+
             // 拖拽开始
             container.addEventListener('dragstart', (e) => {
                 if (e.target.classList.contains('lda-sort-item')) {
@@ -924,7 +1134,7 @@
                     e.dataTransfer.effectAllowed = 'move';
                 }
             });
-            
+
             // 拖拽结束
             container.addEventListener('dragend', (e) => {
                 if (e.target.classList.contains('lda-sort-item')) {
@@ -936,7 +1146,7 @@
                     updateNumbers();
                 }
             });
-            
+
             // 拖拽经过
             container.addEventListener('dragover', (e) => {
                 e.preventDefault();
@@ -949,7 +1159,7 @@
                     target.classList.add('drag-over');
                 }
             });
-            
+
             // 放置
             container.addEventListener('drop', (e) => {
                 e.preventDefault();
@@ -958,7 +1168,7 @@
                     const items = [...container.querySelectorAll('.lda-sort-item')];
                     const draggedIdx = items.indexOf(draggedItem);
                     const targetIdx = items.indexOf(target);
-                    
+
                     if (draggedIdx < targetIdx) {
                         target.after(draggedItem);
                     } else {
@@ -967,7 +1177,7 @@
                     updateNumbers();
                 }
             });
-            
+
             // 保存按钮
             saveBtn.onclick = (e) => {
                 e.stopPropagation();
@@ -976,7 +1186,7 @@
                 const newOrder = [...items].map(item => item.dataset.key);
                 this.state.tabOrder = newOrder;
                 Utils.set(CONFIG.KEYS.TAB_ORDER, newOrder);
-                
+
                 // 显示保存成功
                 saveBtn.textContent = this.t('tab_order_saved');
                 saveBtn.classList.add('saved');
@@ -984,7 +1194,7 @@
                     saveBtn.textContent = this.t('tab_order_save');
                     saveBtn.classList.remove('saved');
                 }, 1500);
-                
+
                 // 重新渲染应用新顺序
                 this.dom.root.remove();
                 this.init(wasOpen);
@@ -995,7 +1205,7 @@
             // 悬浮球点击在 initDrag 中处理（区分拖动和点击）
             Utils.el('#lda-btn-close').onclick = () => this.togglePanel(false);
             Utils.el('#lda-btn-update').onclick = (e) => { e.stopPropagation(); this.checkUpdate({ isAuto: false, force: true }); };
-            
+
             // 点击页面其他地方收起面板
             document.addEventListener('click', (e) => {
                 if (!this.dom.root.contains(e.target) && this.dom.panel.style.display === 'flex') {
@@ -1020,7 +1230,7 @@
                     this.state.lang = langNode.dataset.v;
                     Utils.set(CONFIG.KEYS.LANG, this.state.lang);
                     this.dom.root.remove();
-                    this.init(wasOpen); 
+                    this.init(wasOpen);
                     return;
                 }
                 const sizeNode = e.target.closest('#grp-size .lda-seg-item');
@@ -1043,7 +1253,7 @@
                 }
                 if (e.target.id === 'btn-clear-cache') {
                     this.showConfirm(this.t('clear_cache_tip'), () => {
-                        this.clearAllCaches(false, true);
+                        this.clearAllCaches(false, true); // 清除后重新获取数据
                         this.showToast(this.t('clear_cache_done'), 'success');
                     });
                 }
@@ -1090,6 +1300,7 @@
         }
 
         prewarmAll() {
+            // 只在没有缓存数据时才后台刷新，避免重复请求
             if (!this.trustData) this.refreshTrust({ background: true, force: false });
             if (!this.creditData) this.refreshCredit({ background: true, force: false });
             if (!this.cdkCache?.data) this.refreshCDK({ background: true, force: false });
@@ -1163,280 +1374,37 @@
 
         makeUserSig(info) {
             if (!info) return null;
+            // 优先使用 username，保持 sig 格式一致，避免触发误清缓存
             if (info.username) return `uname:${info.username}`;
             if (info.user?.username) return `uname:${info.user.username}`;
             if (info.user_id || info.id) return `uid:${info.user_id || info.id}`;
             return null;
         }
 
-        async runFallback(tasks = [], maxAttempts = 3) {
-            let lastErr = null;
-            let attempts = 0;
-            for (const task of tasks) {
-                if (attempts >= maxAttempts) break;
-                attempts += 1;
-                try {
-                    const res = await task();
-                    return res;
-                } catch (err) {
-                    lastErr = err;
-                }
-            }
-            throw lastErr || new Error('all methods failed');
-        }
-
-        async resolveUsername() {
-            if (this.userSig?.startsWith('uname:')) return this.userSig.slice('uname:'.length);
-            if (this.trustData?.basic?.username) return this.trustData.basic.username;
-            const cachedTrust = Utils.get(CONFIG.KEYS.CACHE_TRUST_DATA, null);
-            if (cachedTrust?.basic?.username) return cachedTrust.basic.username;
-            if (this.creditData?.info?.username) return this.creditData.info.username;
-            if (this.cdkCache?.data?.username) return this.cdkCache.data.username;
-            try {
-                const stats = await Utils.fetchForumStats();
-                if (stats?.username) {
-                    const sig = this.makeUserSig({ username: stats.username });
-                    if (sig) this.ensureUserSig(sig);
-                    return stats.username;
-                }
-            } catch (_) {}
-            return null;
-        }
-
-        async fetchSummary(username) {
-            const url = `${window.location.origin}/u/${encodeURIComponent(username)}/summary.json`;
-            const r = await fetch(url, { credentials: 'include' });
-            if (!r.ok) throw new Error(`summary http ${r.status}`);
-            return await r.json();
-        }
-
-        async fetchUserJson(username) {
-            const url = `${window.location.origin}/u/${encodeURIComponent(username)}.json`;
-            const r = await fetch(url, { credentials: 'include' });
-            if (!r.ok) throw new Error(`user http ${r.status}`);
-            return await r.json();
-        }
-
-        getLowLevelRequirements(level) {
-            if (level <= 0) {
-                return {
-                    topics_entered: 5,
-                    posts_read_count: 30,
-                    time_read: 600
-                };
-            }
-            return {
-                days_visited: 15,
-                likes_given: 1,
-                likes_received: 1,
-                replies_to_different_topics: 3,
-                topics_entered: 20,
-                posts_read_count: 100,
-                time_read: 3600
-            };
-        }
-
-        buildLowLevelTrust(summary, level, username = null) {
-            const userSummary = summary?.user_summary || {};
-            const req = this.getLowLevelRequirements(level);
-            const items = [];
-            const pushItem = (name, current, target) => {
-                const pct = target > 0 ? Math.min((current / target) * 100, 100) : 0;
-                items.push({
-                    name,
-                    current: String(current),
-                    target,
-                    isGood: current >= target,
-                    pct,
-                    diff: 0
-                });
-            };
-            if (req.topics_entered !== undefined) pushItem('浏览的话题', userSummary.topics_entered || 0, req.topics_entered);
-            if (req.posts_read_count !== undefined) pushItem('已读帖子', userSummary.posts_read_count || 0, req.posts_read_count);
-            if (req.time_read !== undefined) pushItem('阅读时间(秒)', userSummary.time_read || 0, req.time_read);
-            if (req.days_visited !== undefined) pushItem('访问天数', userSummary.days_visited || 0, req.days_visited);
-            if (req.likes_given !== undefined) pushItem('给出的赞', userSummary.likes_given || 0, req.likes_given);
-            if (req.likes_received !== undefined) pushItem('收到的赞', userSummary.likes_received || 0, req.likes_received);
-            if (req.replies_to_different_topics !== undefined) {
-                const repliesCount = userSummary.replies_count || userSummary.posts_read_count || 0;
-                pushItem('回复的话题(估计)', repliesCount, req.replies_to_different_topics);
-            }
-            const isPass = items.every(it => it.isGood);
-            return { level, isPass, items, source: 'summary', username };
-        }
-
-        parseTrustFromConnect(html) {
-            const doc = new DOMParser().parseFromString(html, 'text/html');
-            const bodyText = doc.body?.textContent || '';
-            const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
-            const levelNode = Array.from(doc.querySelectorAll('h1, h2, h3')).find(x => /信任|trust/i.test(x.textContent));
-            if (!levelNode) {
-                const possibleTable = doc.querySelector('table');
-                if (loginHint || /登录|login|sign\s*in/i.test(bodyText)) throw new Error("NeedLogin");
-                if (!possibleTable) throw new Error("ParseError");
-            }
-            const h1 = doc.querySelector('h1');
-            let username = null;
-            const h1Match = h1?.textContent?.match(/你好，\s*([^\s(]+)\s*/);
-            if (h1Match) username = h1Match[1];
-            const level = levelNode.textContent.replace(/\D/g, '');
-            const isPass = levelNode.parentElement.querySelector('.text-green-500') !== null;
-
-            const section = levelNode.closest('.bg-white') || levelNode.closest('.p-6') || levelNode.parentElement;
-            const tables = section ? Array.from(section.querySelectorAll('table')) : Array.from(doc.querySelectorAll('table'));
-            const rows = [];
-            tables.forEach(tbl => {
-                const trs = Array.from(tbl.querySelectorAll('tr'));
-                trs.forEach((tr, idx) => {
-                    if (idx === 0 && tr.querySelectorAll('th').length > 0) return; // skip header
-                    rows.push(tr);
-                });
-            });
-            if (rows.length === 0) this.focusFlags.trust = true;
-            const items = [];
-            const newCache = {};
-            const seenNames = {};
-            rows.forEach(tr => {
-                const tds = tr.querySelectorAll('td');
-                if (tds.length < 3) return;
-                let name = tds[0].textContent.trim().split('（')[0];
-                const current = parseFloat(tds[1].textContent.replace(/,/g, ''));
-                const target = parseFloat(tds[2].textContent.replace(/,/g, ''));
-                const isGood = tds[1].classList.contains('text-green-500');
-                if (seenNames[name]) name = name + ' (All)';
-                seenNames[name] = true;
-                const oldVal = this.state.trustCache[name];
-                let diff = 0;
-                if (typeof oldVal === 'number' && oldVal !== current) diff = current - oldVal;
-                newCache[name] = current;
-                let pct = 0;
-                if (target > 0) pct = Math.min((current / target) * 100, 100);
-                else if (isGood) pct = 100;
-                items.push({ name, current: tds[1].textContent.trim(), target, isGood, pct, diff });
-            });
-            this.state.trustCache = newCache;
-            Utils.set(CONFIG.KEYS.CACHE_TRUST, newCache);
-            return { level, isPass, items, source: 'connect', username };
-        }
-
-        async fetchTrustFromConnectGM() {
-            const html = await Utils.request(CONFIG.API.TRUST);
-            return this.parseTrustFromConnect(html);
-        }
-
-        async fetchTrustFromConnectFetch() {
-            const r = await fetch(CONFIG.API.TRUST, { credentials: 'include' });
-            if (!r.ok) throw new Error(`http ${r.status}`);
-            const html = await r.text();
-            return this.parseTrustFromConnect(html);
-        }
-
-        async fetchTrustFromSummaryFallback() {
-            const username = await this.resolveUsername();
-            if (!username) throw new Error('no-username');
-            const summary = await this.fetchSummary(username);
-            const level = summary?.user_summary?.trust_level ?? summary?.user?.trust_level ?? 0;
-            if (level >= 2) throw new Error('need-connect');
-            return this.buildLowLevelTrust(summary, level, username);
-        }
-
-        async fetchTrustFromUserJsonFallback() {
-            const username = await this.resolveUsername();
-            if (!username) throw new Error('no-username');
-            const userInfo = await this.fetchUserJson(username);
-            const level = userInfo?.user?.trust_level ?? userInfo?.trust_level;
-            if (level === undefined || level === null) throw new Error('no-level');
-            return { level, isPass: false, items: [], source: 'user.json', username };
-        }
-
-        async fetchTrustWithFallback() {
-            const trust = await this.runFallback([
-                () => this.fetchTrustFromConnectGM(),
-                () => this.fetchTrustFromConnectFetch(),
-                () => this.fetchTrustFromSummaryFallback().catch(err => {
-                    if (err?.message === 'need-connect') return this.fetchTrustFromUserJsonFallback();
-                    throw err;
-                })
-            ], 3);
-            if (trust?.source === 'connect' && (trust.items?.length || 0) < 6) {
-                try {
-                    const uname = trust.username || await this.resolveUsername();
-                    if (uname) {
-                        const summary = await this.fetchSummary(uname);
-                        const level = summary?.user_summary?.trust_level ?? trust.level;
-                        const low = this.buildLowLevelTrust(summary, level, uname);
-                        const exist = new Set(trust.items.map(i => i.name));
-                        const merged = [...trust.items];
-                        low.items.forEach(it => { if (!exist.has(it.name)) merged.push(it); });
-                        trust.items = merged;
-                        trust.username = trust.username || uname;
-                    }
-                } catch (_) {}
-            }
-            return trust;
-        }
-
-        async fetchCreditViaGM() {
-            const infoPromise = Utils.request(CONFIG.API.CREDIT_INFO, { withCredentials: true });
-            const statPromise = Utils.request(CONFIG.API.CREDIT_STATS, { withCredentials: true });
-            let info = null;
-            let stats = [];
-            await Promise.all([
-                infoPromise.then(r => {
-                    info = JSON.parse(r).data;
-                    const sig = this.makeUserSig(info);
-                    if (sig) this.ensureUserSig(sig);
-                }),
-                statPromise.then(r => {
-                    stats = JSON.parse(r).data || [];
-                })
-            ]);
-            return { info, stats, source: 'gm' };
-        }
-
-        async fetchCreditViaFetch() {
-            const fetchJson = async (url) => {
-                const r = await fetch(url, { credentials: 'include' });
-                if (!r.ok) throw new Error(`http ${r.status}`);
-                return await r.json();
-            };
-            const [infoRes, statsRes] = await Promise.all([
-                fetchJson(CONFIG.API.CREDIT_INFO),
-                fetchJson(CONFIG.API.CREDIT_STATS)
-            ]);
-            const info = infoRes.data;
-            const stats = statsRes.data || [];
-            const sig = this.makeUserSig(info);
-            if (sig) this.ensureUserSig(sig);
-            return { info, stats, source: 'fetch' };
-        }
-
-        async fetchCreditFromCache() {
-            const cached = Utils.get(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
-            if (!cached?.info) throw new Error('no-cache');
-            return { ...cached, source: 'cache', fromCache: true };
-        }
-
-        async fetchCreditWithFallback() {
-            return await this.runFallback([
-                () => this.fetchCreditViaGM(),
-                () => this.fetchCreditViaFetch(),
-                () => this.fetchCreditFromCache()
-            ], 3);
-        }
-
         ensureUserSig(sig) {
             if (!sig) return;
             if (this.userSig && this.userSig !== sig) {
-                const compat = (a, b) => {
+                // 检查是否是同一用户的不同格式 sig（如 uid vs uname）
+                const isCompat = (a, b) => {
                     const ua = a.startsWith('uname:');
                     const ub = b.startsWith('uname:');
                     const ia = a.startsWith('uid:');
                     const ib = b.startsWith('uid:');
+                    // 如果一个是 uname 一个是 uid，可能是同一用户
                     return (ua && ib) || (ia && ub);
                 };
-                if (!compat(this.userSig, sig)) {
-                    this.clearAllCaches(false);
+                if (!isCompat(this.userSig, sig)) {
+                    // 真正的用户切换才清空缓存，但只清数据不清 DOM
+                    this.trustData = null;
+                    this.creditData = null;
+                    this.cdkCache = null;
+                    this.state.trustCache = {};
+                    this.lastFetch = { trust: 0, credit: 0, cdk: 0 };
+                    Utils.set(CONFIG.KEYS.CACHE_TRUST, {});
+                    Utils.set(CONFIG.KEYS.CACHE_TRUST_DATA, null);
+                    Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
+                    Utils.set(CONFIG.KEYS.CACHE_CDK, null);
+                    Utils.set(CONFIG.KEYS.CACHE_META, this.lastFetch);
                 }
             }
             this.userSig = sig;
@@ -1489,28 +1457,56 @@
             const manual = opts.manual;
             const forceFetch = opts.force ?? !opts.background;
             const wrap = this.dom.trust;
-            const existingBtn = Utils.el('#btn-re-trust', wrap);
             const endWait = this.beginWait('trust');
-            if(existingBtn) existingBtn.classList.add('loading');
-            else if (!wrap.innerHTML) wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+
+            // 设置刷新状态并开始按钮旋转
+            this.refreshingPages.trust = true;
+            this.refreshStartTime.trust = Date.now();
+            this.setRefreshBtnLoading('trust', true);
+
+            // 确保显示加载提示
+            if (!wrap.innerHTML || wrap.innerHTML.trim() === '') {
+                wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+            }
 
             try {
                 if (this.trustData && !forceFetch && !this.isExpired('trust')) {
                     this.renderTrust(this.trustData);
+                    this.stopRefreshWithMinDuration('trust');
+                    endWait();
                     return;
                 }
                 if (this.trustData) this.renderTrust(this.trustData);
 
-                const statsPromise = Utils.fetchForumStats();
-                const trustData = await this.fetchTrustWithFallback();
-                if (trustData?.username) {
-                    const sig = this.makeUserSig({ username: trustData.username });
-                    if (sig) this.ensureUserSig(sig);
+                // ===== 新增：先获取用户信息确定信任等级 =====
+                const username = Utils.getCurrentUsername();
+                let userTrustLevel = null;
+                let userInfo = null;
+
+                if (username) {
+                    userInfo = await Utils.fetchUserInfo(username);
+                    if (userInfo) {
+                        userTrustLevel = userInfo.trust_level;
+                        this.ensureUserSig(this.makeUserSig({ username: userInfo.username }));
+                    }
                 }
+
+                // 并行获取排名数据
+                const statsPromise = Utils.fetchForumStats();
+
+                // ===== 根据信任等级选择数据获取策略 =====
+                let trustData;
+                if (userTrustLevel !== null && userTrustLevel <= 1) {
+                    // 0-1级用户：使用 summary.json + 硬编码要求
+                    trustData = await this.fetchLowLevelTrustData(username, userTrustLevel);
+                } else {
+                    // 2级及以上或无法确定等级：使用 connect.linux.do
+                    trustData = await this.fetchHighLevelTrustData(userTrustLevel);
+                }
+
                 const statsData = await statsPromise.then(forumStats => {
-                    if (forumStats?.username) {
-                        const sig = this.makeUserSig({ username: forumStats.username });
-                        if (sig) this.ensureUserSig(sig);
+                    if (forumStats?.personal?.user?.username) {
+                        this.ensureUserSig(this.makeUserSig({ username: forumStats.personal.user.username }));
                     }
                     return {
                         dailyRank: forumStats?.dailyRank || null,
@@ -1526,7 +1522,7 @@
                 if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
 
             } catch (e) {
-                const isLogin = e?.message === 'NeedLogin' || e?.status === 401 || /http 401/i.test(e?.message || '');
+                const isLogin = e?.message === 'NeedLogin' || e?.status === 401;
 
                 if (autoRetry && !isLogin) {
                     this.focusFlags.trust = true;
@@ -1553,15 +1549,210 @@
                     return;
                 }
 
-                wrap.innerHTML = `<div class="lda-card" style="text-align:center;color:var(--lda-red)">${this.t('connect_err')}<br><button id="retry-trust" style="margin-top:8px;padding:4px 12px;">Retry</button></div>`;
-                Utils.el('#retry-trust', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshTrust(); };
-                this.focusFlags.trust = true;
+                this.renderNetworkError(wrap, 'trust', () => this.refreshTrust());
             } finally {
-                if (existingBtn) existingBtn.classList.remove('loading');
+                // 确保按钮至少旋转 1 秒
+                this.stopRefreshWithMinDuration('trust');
                 endWait();
             }
         }
 
+        // ===== 新增：刷新按钮状态管理 =====
+        setRefreshBtnLoading(page, on) {
+            const btnMap = { trust: '#btn-re-trust', credit: '#btn-re-credit', cdk: '#btn-re-cdk' };
+            const selector = btnMap[page];
+            if (!selector) return;
+            const wrap = this.dom[page];
+            if (!wrap) return;
+            const btn = Utils.el(selector, wrap);
+            if (btn) {
+                btn.classList.toggle('loading', on);
+            }
+        }
+
+        stopRefreshWithMinDuration(page, minDuration = 1000) {
+            // 如果已经不在刷新状态且没有待处理的停止请求，直接返回（幂等性）
+            if (!this.refreshingPages[page] && !this.refreshStopPending[page]) return;
+
+            // 如果已经有待处理的停止请求，不重复设置
+            if (this.refreshStopPending[page]) return;
+
+            const elapsed = Date.now() - (this.refreshStartTime[page] || 0);
+            const remaining = Math.max(0, minDuration - elapsed);
+
+            const doStop = () => {
+                this.refreshingPages[page] = false;
+                this.refreshStopPending[page] = false;
+                this.setRefreshBtnLoading(page, false);
+            };
+
+            if (remaining > 0) {
+                this.refreshStopPending[page] = true;
+                setTimeout(doStop, remaining);
+            } else {
+                doStop();
+            }
+        }
+
+        // ===== 新增：0-1级用户数据获取（使用 summary.json + 硬编码要求）=====
+        async fetchLowLevelTrustData(username, currentLevel) {
+            const summary = await Utils.fetchUserSummary(username);
+            if (!summary) throw new Error("ParseError");
+
+            const targetLevel = currentLevel + 1; // 目标升级等级
+            const requirements = CONFIG.LEVEL_REQUIREMENTS[currentLevel];
+            if (!requirements) throw new Error("ParseError");
+
+            const items = [];
+            const newCache = {};
+            let allPassed = true;
+
+            for (const [key, req] of Object.entries(requirements)) {
+                let current = summary[key] || 0;
+                let target = req.target;
+                let currentDisplay = String(current);
+
+                // 处理时间格式
+                if (req.unit === 'seconds') {
+                    currentDisplay = Utils.formatReadTime(current);
+                    // 目标也转换为可读格式用于显示
+                }
+
+                const isGood = current >= target;
+                if (!isGood) allPassed = false;
+
+                const oldVal = this.state.trustCache[req.name];
+                let diff = 0;
+                if (typeof oldVal === 'number' && oldVal !== current) {
+                    diff = current - oldVal;
+                }
+
+                newCache[req.name] = current;
+
+                let pct = target > 0 ? Math.min((current / target) * 100, 100) : (isGood ? 100 : 0);
+
+                // 目标显示格式
+                let targetDisplay = req.unit === 'seconds' ? Utils.formatReadTime(target) : target;
+
+                items.push({
+                    name: req.name,
+                    current: currentDisplay,
+                    target: targetDisplay,
+                    isGood,
+                    pct,
+                    diff
+                });
+            }
+
+            this.state.trustCache = newCache;
+            Utils.set(CONFIG.KEYS.CACHE_TRUST, newCache);
+
+            return {
+                level: String(currentLevel),
+                isPass: allPassed,
+                items
+            };
+        }
+
+        // ===== 新增：2级及以上用户数据获取（使用 connect.linux.do）=====
+        async fetchHighLevelTrustData(knownLevel = null) {
+            const html = await Utils.request(CONFIG.API.TRUST);
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            const bodyText = doc.body?.textContent || '';
+            const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
+            const levelNode = Array.from(doc.querySelectorAll('h1, h2, h3')).find(x => /信任|trust/i.test(x.textContent));
+
+            if (!levelNode) {
+                const possibleTable = doc.querySelector('table');
+                if (loginHint || /登录|login|sign\s*in/i.test(bodyText)) throw new Error("NeedLogin");
+                if (!possibleTable) throw new Error("ParseError");
+            }
+
+            const level = knownLevel !== null ? String(knownLevel) : levelNode.textContent.replace(/\D/g, '');
+            const isPass = levelNode.parentElement.querySelector('.text-green-500') !== null;
+            const rows = Array.from(levelNode.parentElement.parentElement.querySelectorAll('tr')).slice(1);
+            if (rows.length === 0) this.focusFlags.trust = true;
+
+            const items = [];
+            const newCache = {};
+            const seenNames = {};
+
+            rows.forEach(tr => {
+                const tds = tr.querySelectorAll('td');
+                if (tds.length < 3) return;
+
+                let name = tds[0].textContent.trim().split('（')[0];
+                const current = parseFloat(tds[1].textContent.replace(/,/g, ''));
+                const target = parseFloat(tds[2].textContent.replace(/,/g, ''));
+                const isGood = tds[1].classList.contains('text-green-500');
+
+                if (seenNames[name]) {
+                    name = name + ' (All)';
+                }
+                seenNames[name] = true;
+
+                const oldVal = this.state.trustCache[name];
+                let diff = 0;
+                if (typeof oldVal === 'number' && oldVal !== current) {
+                    diff = current - oldVal;
+                }
+
+                newCache[name] = current;
+
+                let pct = 0;
+                if (target > 0) pct = Math.min((current/target)*100, 100);
+                else if (isGood) pct = 100;
+
+                items.push({ name, current: tds[1].textContent.trim(), target, isGood, pct, diff });
+            });
+
+            this.state.trustCache = newCache;
+            Utils.set(CONFIG.KEYS.CACHE_TRUST, newCache);
+
+            return { level, isPass, items };
+        }
+
+
+        // ===== V3新增：友好错误UI渲染 =====
+        renderNetworkError(wrap, page, retryFn) {
+            wrap.innerHTML = `
+                <div class="lda-card lda-error-card">
+                    <div class="lda-error-icon">
+                        <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                    </div>
+                    <div class="lda-error-title">${this.t('network_error_title')}</div>
+                    <div class="lda-error-tip">${this.t('network_error_tip')}</div>
+                    <button class="lda-error-btn" id="btn-retry-${page}">
+                        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
+                        ${this.t('network_error_retry')}
+                    </button>
+                </div>
+            `;
+            Utils.el(`#btn-retry-${page}`, wrap).onclick = (e) => {
+                e.stopPropagation();
+                retryFn();
+            };
+            this.focusFlags[page] = true;
+        }
+
+        // 生成降级提示横幅HTML
+        getFallbackBannerHtml() {
+            return `
+                <div class="lda-fallback-banner">
+                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+                    <div class="lda-fallback-text">
+                        <strong>${this.t('trust_fallback_title')}</strong><br>
+                        ${this.t('trust_fallback_tip')}
+                    </div>
+                </div>
+            `;
+        }
+
+        // 生成数据来源标签HTML
+        getSourceTagHtml(source) {
+            const sourceText = source === 'connect' ? 'Connect' : 'Summary';
+            return `<span class="lda-source-tag">${this.t('trust_data_source')}: ${sourceText}</span>`;
+        }
         renderTrust(data) {
             const wrap = this.dom.trust;
             if (!data?.basic) {
@@ -1620,6 +1811,10 @@
                 </div>
             `;
             Utils.el('#btn-re-trust', wrap).onclick = (e) => { e.stopPropagation(); this.refreshTrust({ manual: true, force: true }); };
+            // 如果正在刷新或等待延迟停止，保持按钮旋转状态
+            if (this.refreshingPages.trust || this.refreshStopPending.trust) {
+                this.setRefreshBtnLoading('trust', true);
+            }
         }
 
         async refreshCredit(arg = true) {
@@ -1629,34 +1824,56 @@
             const manual = opts.manual;
             const forceFetch = opts.force ?? !opts.background;
             const wrap = this.dom.credit;
-            const existingBtn = Utils.el('#btn-re-credit', wrap);
             const endWait = this.beginWait('credit');
-            if(existingBtn) existingBtn.classList.add('loading');
-            else if (!wrap.innerHTML) wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+
+            // 设置刷新状态并开始按钮旋转
+            this.refreshingPages.credit = true;
+            this.refreshStartTime.credit = Date.now();
+            this.setRefreshBtnLoading('credit', true);
+
+            // 确保显示加载提示
+            if (!wrap.innerHTML || wrap.innerHTML.trim() === '') {
+                wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+            }
 
             try {
                 if (this.creditData && !forceFetch && !this.isExpired('credit')) {
                     this.renderCredit(this.creditData);
+                    this.stopRefreshWithMinDuration('credit');
                     endWait();
-                    if (existingBtn) existingBtn.classList.remove('loading');
                     return;
                 }
                 if (this.creditData) this.renderCredit(this.creditData);
 
-                const creditResult = await this.fetchCreditWithFallback();
-                const { info, stats } = creditResult;
+                const infoPromise = Utils.request(CONFIG.API.CREDIT_INFO, { withCredentials: true });
+                const statPromise = Utils.request(CONFIG.API.CREDIT_STATS, { withCredentials: true });
+
+                let info = null;
+                let stats = [];
+
+                await Promise.all([
+                    infoPromise.then(r => {
+                        info = JSON.parse(r).data;
+                        const sig = this.makeUserSig(info);
+                        if (sig) this.ensureUserSig(sig);
+                    }),
+                    statPromise.then(r => {
+                        stats = JSON.parse(r).data || [];
+                    })
+                ]);
+
                 this.creditData = { info, stats };
                 this.renderCredit(this.creditData);
                 Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, this.creditData);
                 this.markFetch('credit');
-                if (existingBtn) existingBtn.classList.remove('loading');
+                this.stopRefreshWithMinDuration('credit');
                 if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
                 endWait();
             } catch(e) {
-                const isLogin = e?.status === 401 || /unauthorized|not\s*login/i.test(e?.responseText || '') || /http 401/i.test(e?.message || '');
+                const isLogin = e?.status === 401 || /unauthorized|not\s*login/i.test(e?.responseText || '');
 
                 if (autoRetry && !isLogin) {
-                    if (existingBtn) existingBtn.classList.remove('loading');
+                    this.stopRefreshWithMinDuration('credit');
                     this.focusFlags.credit = true;
                     setTimeout(() => this.refreshCredit(false), 200);
                     endWait();
@@ -1664,7 +1881,7 @@
                 }
 
                 if (isLogin) {
-                    if (existingBtn) existingBtn.classList.remove('loading');
+                    this.stopRefreshWithMinDuration('credit');
                     this.focusFlags.credit = true;
                     wrap.innerHTML = `
                         <div class="lda-card lda-auth-card">
@@ -1684,10 +1901,8 @@
                     return;
                 }
 
-                wrap.innerHTML = `<div class="lda-card" style="text-align:center;color:var(--lda-red)">${this.t('connect_err')}<br><button id="retry-credit" style="margin-top:8px;padding:4px 12px;">Retry</button></div>`;
-                Utils.el('#retry-credit', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshCredit(); };
-                if (existingBtn) existingBtn.classList.remove('loading');
-                this.focusFlags.credit = true;
+                this.renderNetworkError(wrap, 'credit', () => this.refreshCredit());
+                this.stopRefreshWithMinDuration('credit');
                 endWait();
             }
         }
@@ -1734,6 +1949,10 @@
                 </div>
             `;
             Utils.el('#btn-re-credit', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCredit({ manual: true, force: true }); };
+            // 如果正在刷新或等待延迟停止，保持按钮旋转状态
+            if (this.refreshingPages.credit || this.refreshStopPending.credit) {
+                this.setRefreshBtnLoading('credit', true);
+            }
         }
 
         async refreshCDK(arg = true) {
@@ -1741,22 +1960,23 @@
             const opts = typeof arg === 'object' ? { ...base, ...arg } : { ...base, manual: !!arg, force: arg === false ? false : undefined };
             const manual = opts.manual;
             const wrap = this.dom.cdk;
-            const existingBtn = Utils.el('#btn-re-cdk', wrap);
-            const setLoading = (on) => {
-                const btn = Utils.el('#btn-re-cdk', wrap);
-                if (btn) btn.classList.toggle('loading', on);
-            };
-
             const endWait = this.beginWait('cdk');
 
-            if (existingBtn) setLoading(true);
-            else if (!wrap.innerHTML) wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+            // 设置刷新状态并开始按钮旋转
+            this.refreshingPages.cdk = true;
+            this.refreshStartTime.cdk = Date.now();
+            this.setRefreshBtnLoading('cdk', true);
+
+            // 确保显示加载提示
+            if (!wrap.innerHTML || wrap.innerHTML.trim() === '') {
+                wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+            }
 
             // 如果有新鲜缓存，先展示，避免空白
             if (this.isCDKCacheFresh()) {
                 this.renderCDKContent(this.cdkCache.data);
                 if (!opts.force && !this.isExpired('cdk')) {
-                    setLoading(false);
+                    this.stopRefreshWithMinDuration('cdk');
                     endWait();
                     return;
                 }
@@ -1769,7 +1989,7 @@
                 const sig = this.makeUserSig({ username: info.username, user_id: info.id });
                 if (sig) this.ensureUserSig(sig);
                 this.renderCDKContent(info);
-                setLoading(false);
+                this.stopRefreshWithMinDuration('cdk');
                 this.markFetch('cdk');
                 if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
                 endWait();
@@ -1783,13 +2003,13 @@
                 const sig = this.makeUserSig({ username: info.username, user_id: info.id });
                 if (sig) this.ensureUserSig(sig);
                 this.renderCDKContent(info);
-                setLoading(false);
+                this.stopRefreshWithMinDuration('cdk');
                 this.markFetch('cdk');
                 if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
                 endWait();
                 return;
             } catch (_) {
-                setLoading(false);
+                this.stopRefreshWithMinDuration('cdk');
                 // 如果已经展示了缓存，就不覆盖为未授权提示
                 if (this.isCDKCacheFresh()) {
                     endWait();
@@ -1934,6 +2154,10 @@
                 </div>
             `;
             Utils.el('#btn-re-cdk', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCDK({ manual: true, force: true }); };
+            // 如果正在刷新或等待延迟停止，保持按钮旋转状态
+            if (this.refreshingPages.cdk || this.refreshStopPending.cdk) {
+                this.setRefreshBtnLoading('cdk', true);
+            }
         }
 
         renderCDKAuth() {
@@ -2024,7 +2248,7 @@
 
         initDrag() {
             let isDrag = false, hasDragged = false, startX, startY, startR, startT;
-            
+
             const onMove = (e) => {
                 if (!isDrag) return;
                 const dx = e.clientX - startX;
@@ -2036,7 +2260,7 @@
                     this.dom.root.style.top = Math.max(0, Math.min(startT + dy, window.innerHeight - 50)) + 'px';
                 });
             };
-            
+
             const onUp = () => {
                 if (isDrag) {
                     isDrag = false;
@@ -2048,7 +2272,7 @@
                     this.updatePanelSide();
                 }
             };
-            
+
             const startDrag = (e, target) => {
                 if (e.button !== 0) return; // 只响应左键
                 if (target === this.dom.head && e.target.closest('.lda-icon-btn')) return;
@@ -2064,10 +2288,10 @@
                 document.addEventListener('mouseup', onUp);
                 e.preventDefault();
             };
-            
+
             // 悬浮球拖动
             this.dom.ball.onmousedown = (e) => startDrag(e, this.dom.ball);
-            
+
             // 悬浮球点击（区分拖动和点击）
             this.dom.ball.onclick = (e) => {
                 if (hasDragged) {
@@ -2077,7 +2301,7 @@
                 }
                 this.togglePanel(true);
             };
-            
+
             // 面板头部拖动
             this.dom.head.onmousedown = (e) => startDrag(e, this.dom.head);
         }
@@ -2098,18 +2322,18 @@
             if (isAuto && !force) {
                 if (now - (this.lastSkipUpdate || 0) < ONE_HOUR) return;
             }
-            
+
             if (btn?.classList.contains('lda-spin')) return; // 防止重复点击
             btn?.classList.add('lda-spin');
-            
+
             try {
                 const res = await Utils.request(updateUrl);
                 const match = res.match(/@version\s+([\d.]+)/);
                 if (!match) throw new Error('Parse error');
-                
+
                 const remote = match[1];
                 const current = GM_info.script.version;
-                
+
                 if (this.compareVersion(remote, current) > 0) {
                     // 有新版本，显示提示
                     this.showUpdatePrompt(remote, updateUrl);
@@ -2119,7 +2343,7 @@
             } catch (e) {
                 if (!isAuto) this.showToast(this.t('update_err'), 'error');
             }
-            
+
             btn?.classList.remove('lda-spin');
             Utils.set(CONFIG.KEYS.LAST_AUTO_CHECK, now);
             this.lastAutoCheck = now;
@@ -2170,7 +2394,7 @@
             mask.onclick = dispose;
             box.onclick = (e) => e.stopPropagation();
         }
-        
+
         showUpdatePrompt(version, url) {
             const host = this.dom?.panel || document.body;
             const existing = Utils.el('#lda-update-mask', host);
@@ -2197,17 +2421,17 @@
             mask.appendChild(box);
             host.appendChild(mask);
             const dispose = () => mask.remove();
-            box.querySelector('#lda-update-go').onclick = (e) => { 
-                e.stopPropagation(); 
+            box.querySelector('#lda-update-go').onclick = (e) => {
+                e.stopPropagation();
                 try { window.open(url, '_blank'); } catch(_) {}
-                dispose(); 
+                dispose();
             };
-            box.querySelector('#lda-update-skip').onclick = (e) => { 
-                e.stopPropagation(); 
+            box.querySelector('#lda-update-skip').onclick = (e) => {
+                e.stopPropagation();
                 const now = Date.now();
                 this.lastSkipUpdate = now;
                 Utils.set(CONFIG.KEYS.LAST_SKIP_UPDATE, now);
-                dispose(); 
+                dispose();
             };
             mask.onclick = dispose;
             box.onclick = (e) => e.stopPropagation();
