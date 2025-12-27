@@ -50,6 +50,14 @@
 |:---:|:---:|:---:|:---:|
 | ![信任级别](pics/p1.png) | ![积分详情](pics/p2.png) | ![CDK分数](pics/p4.png) | ![偏好设置](pics/p3.png) |
 
+### 全部达标效果
+
+<p align="center">
+  <img src="pics/p1-1.png" alt="全部达标庆祝" width="280">
+</p>
+
+> 当信任级别所有指标都达标时，会显示庆祝界面，点击「详情」可查看具体指标
+
 > 注：CDK 社区分数功能需要先访问 [cdk.linux.do](https://cdk.linux.do/dashboard) 完成 OAuth 授权
 
 ## 📦 安装方法
