@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      4.4.5
+// @version      4.5.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -3113,6 +3113,59 @@
             };
 
             this.dom.head.onmousedown = (e) => startDrag(e, this.dom.head);
+
+            // 移动端触摸事件支持
+            let isTouchDrag = false, hasTouchDragged = false, touchStartX, touchStartY, touchStartR, touchStartT;
+
+            const onTouchMove = (e) => {
+                if (!isTouchDrag) return;
+                const touch = e.touches[0];
+                const dx = touch.clientX - touchStartX;
+                const dy = touch.clientY - touchStartY;
+                if (Math.abs(dx) > 5 || Math.abs(dy) > 5) hasTouchDragged = true;
+                if (hasTouchDragged) e.preventDefault();
+                requestAnimationFrame(() => {
+                    this.dom.root.style.right = Math.max(0, touchStartR - dx) + 'px';
+                    this.dom.root.style.top = Math.max(0, Math.min(touchStartT + dy, window.innerHeight - 50)) + 'px';
+                });
+            };
+
+            const onTouchEnd = () => {
+                if (isTouchDrag) {
+                    isTouchDrag = false;
+                    this.dom.ball.classList.remove('dragging');
+                    document.removeEventListener('touchmove', onTouchMove);
+                    document.removeEventListener('touchend', onTouchEnd);
+                    document.removeEventListener('touchcancel', onTouchEnd);
+                    const r = this.dom.root.getBoundingClientRect();
+                    Utils.set(CONFIG.KEYS.POS, { r: window.innerWidth - r.right, t: r.top });
+                    this.updatePanelSide();
+                    // 处理触摸点击
+                    if (!hasTouchDragged) {
+                        this.togglePanel(true);
+                    }
+                    hasTouchDragged = false;
+                }
+            };
+
+            const startTouchDrag = (e, target) => {
+                if (target === this.dom.head && e.target.closest('.lda-icon-btn')) return;
+                const touch = e.touches[0];
+                isTouchDrag = true;
+                hasTouchDragged = false;
+                touchStartX = touch.clientX;
+                touchStartY = touch.clientY;
+                const rect = this.dom.root.getBoundingClientRect();
+                touchStartR = window.innerWidth - rect.right;
+                touchStartT = rect.top;
+                if (target === this.dom.ball) this.dom.ball.classList.add('dragging');
+                document.addEventListener('touchmove', onTouchMove, { passive: false });
+                document.addEventListener('touchend', onTouchEnd);
+                document.addEventListener('touchcancel', onTouchEnd);
+            };
+
+            this.dom.ball.ontouchstart = (e) => startTouchDrag(e, this.dom.ball);
+            this.dom.head.ontouchstart = (e) => startTouchDrag(e, this.dom.head);
         }
 
         restorePos() {
