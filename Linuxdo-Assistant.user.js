@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      4.1.0
+// @version      4.2.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -653,7 +653,7 @@
         /* 面板 */
         .lda-panel {
             position: absolute; top: 0; right: 0;
-            width: 370px; background: var(--lda-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+            width: clamp(300px, calc(100vw - 24px), 370px); background: var(--lda-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
             border: var(--lda-border); border-radius: var(--lda-rad); box-shadow: var(--lda-shadow);
             display: none; flex-direction: column; overflow: hidden; margin-top: 0;
             transform-origin: top right; animation: lda-in 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -695,6 +695,11 @@
         .h-lg .lda-body { height: 520px; overflow-y: auto; }
         .h-auto .lda-body { height: auto; max-height: 80vh; min-height: 200px; overflow-y: auto; }
         .lda-body::-webkit-scrollbar { width: 4px; }
+
+        /* 移动端响应式适配 */
+        @media (max-width: 420px) {
+            .h-auto .lda-body { max-height: 65vh; }
+        }
         .lda-body::-webkit-scrollbar-thumb { background: rgba(125,125,125,0.2); border-radius: 2px; }
 
         /* 卡片通用 */
