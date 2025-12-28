@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      4.2.0
+// @version      4.3.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -843,6 +843,13 @@
         .lda-spin { animation: lda-spin 0.8s linear infinite; }
         @keyframes lda-spin { 100% { transform: rotate(360deg); } }
 
+        /* 云朵脉冲动画（检查更新） */
+        .lda-cloud-pulse { animation: lda-cloud-pulse 0.6s ease-in-out infinite; }
+        @keyframes lda-cloud-pulse {
+            0%, 100% { opacity: 0.5; transform: scale(1); }
+            50% { opacity: 1; transform: scale(1.2); }
+        }
+
         /* 拖拽排序 */
         .lda-sortable { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
         .lda-sort-item {
@@ -1104,7 +1111,7 @@
                     <div class="lda-head">
                         <div class="lda-title">Linux.do 小秘书</div>
                         <div class="lda-actions">
-                            <div class="lda-icon-btn" id="lda-btn-update" title="${this.t('check_update')}"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M21 10.12h-6.78l2.74-2.82c-2.73-2.7-7.15-2.8-9.88-.1-2.73 2.71-2.73 7.08 0 9.79s7.15 2.71 9.88 0C18.32 15.65 19 14.08 19 12.1h2c0 1.98-.88 4.55-2.64 6.29-3.51 3.48-9.21 3.48-12.72 0-3.5-3.47-3.53-9.11-.02-12.58s9.14-3.47 12.65 0L21 3v7.12z"/></svg></div>
+                            <div class="lda-icon-btn" id="lda-btn-update" title="${this.t('check_update')}"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg></div>
                             <div class="lda-icon-btn" id="lda-btn-theme" title="${this.t('theme_tip')}"></div>
                             <div class="lda-icon-btn" id="lda-btn-close"><svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></div>
                         </div>
@@ -2937,8 +2944,13 @@
                 if (now - (this.lastSkipUpdate || 0) < ONE_HOUR) return;
             }
 
-            if (btn?.classList.contains('lda-spin')) return;
-            btn?.classList.add('lda-spin');
+            if (btn?.classList.contains('lda-cloud-pulse')) return;
+            btn?.classList.add('lda-cloud-pulse');
+
+            // 显示检查提示（1秒后淡出）
+            if (!isAuto) {
+                this.showToast(this.t('checking'), 'info', 1000);
+            }
 
             try {
                 const res = await Utils.request(updateUrl);
@@ -2957,12 +2969,12 @@
                 if (!isAuto) this.showToast(this.t('update_err'), 'error');
             }
 
-            btn?.classList.remove('lda-spin');
+            btn?.classList.remove('lda-cloud-pulse');
             Utils.set(CONFIG.KEYS.LAST_AUTO_CHECK, now);
             this.lastAutoCheck = now;
         }
 
-        showToast(msg, type = 'info') {
+        showToast(msg, type = 'info', duration = 2500) {
             const host = this.dom?.panel || document.body;
             const toast = document.createElement('div');
             toast.style.cssText = `
@@ -2971,10 +2983,14 @@
                 background: ${type === 'success' ? 'var(--lda-green)' : type === 'error' ? 'var(--lda-red)' : 'var(--lda-accent)'};
                 color: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.2); pointer-events:none;
                 animation: lda-fade 0.2s; white-space: nowrap;
+                transition: opacity 0.3s ease;
             `;
             toast.textContent = msg;
             host.appendChild(toast);
-            setTimeout(() => toast.remove(), 2500);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }, duration);
         }
 
         showUpdatePrompt(version, url) {
