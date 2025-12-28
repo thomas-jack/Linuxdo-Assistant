@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      4.4.1
+// @version      4.4.2
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -1695,7 +1695,7 @@
 
 
         startUserWatcher() {
-            // 借鉴 v4：每 5 秒检查一次账号是否切换/退出，用于缓存失效与 UI 更新
+            // 事件驱动 + 保底轮询：检测账号切换/退出，用于缓存失效与 UI 更新
             if (this.userWatchTimer) return;
             if (location.host !== 'linux.do') return;
 
@@ -1720,8 +1720,26 @@
                 }
             };
 
+            // 启动时执行一次
             tick();
-            this.userWatchTimer = setInterval(tick, 5000);
+
+            // 事件驱动：窗口获得焦点时检查
+            window.addEventListener('focus', tick);
+
+            // 事件驱动：标签页切换回来时检查
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'visible') tick();
+            });
+
+            // 事件驱动：其他标签页修改存储时检查（跨标签页登录/退出）
+            window.addEventListener('storage', (e) => {
+                if (e.key && (e.key.includes('session') || e.key.includes('user') || e.key.includes('login'))) {
+                    tick();
+                }
+            });
+
+            // 保底轮询：60秒一次，防止极端情况漏检
+            this.userWatchTimer = setInterval(tick, 60000);
         }
 
         isExpired(type) {
