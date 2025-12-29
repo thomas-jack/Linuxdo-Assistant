@@ -1921,13 +1921,17 @@
         }
 
         // ===== 小秘书图标缓存管理 =====
+        hasValidIconCache() {
+            return !!(this.iconCache && this.iconCache.version === SECRETARY_ICONS.version && this.iconCache.normal && this.iconCache.hover);
+        }
+
         async loadSecretaryIcons() {
             // 如果使用经典图标，不需要加载
-            if (this.state.useClassicIcon) return;
+            if (this.state.useClassicIcon) return false;
 
             // 检查缓存是否有效
-            if (this.iconCache && this.iconCache.version === SECRETARY_ICONS.version && this.iconCache.normal && this.iconCache.hover) {
-                return; // 缓存有效，直接使用
+            if (this.hasValidIconCache()) {
+                return true; // 缓存有效
             }
 
             // 需要重新下载并缓存
@@ -1944,10 +1948,12 @@
                         hover: hoverBase64
                     };
                     Utils.set(CONFIG.KEYS.ICON_CACHE, this.iconCache);
+                    return true; // 下载成功
                 }
             } catch (err) {
-                console.warn('[LDA] 小秘书图标加载失败，使用远程URL', err);
+                console.warn('[LDA] 小秘书图标加载失败', err);
             }
+            return false; // 下载失败
         }
 
         fetchImageAsBase64(url) {
@@ -1984,7 +1990,8 @@
             const ball = this.dom.ball;
             if (!ball) return;
 
-            if (this.state.useClassicIcon) {
+            // 用户选择经典图标，或者没有有效缓存时，显示经典图标
+            if (this.state.useClassicIcon || !this.hasValidIconCache()) {
                 // 经典地球图标
                 ball.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>`;
                 ball.classList.remove('lda-ball-secretary');
@@ -1992,7 +1999,7 @@
                 ball.style.width = '';
                 ball.style.height = '';
             } else {
-                // 小秘书图标
+                // 小秘书图标（有有效缓存）
                 const normalUrl = this.getSecretaryIconUrl('normal');
                 const hoverUrl = this.getSecretaryIconUrl('hover');
                 ball.innerHTML = `<img class="lda-ball-img lda-ball-img-normal" src="${normalUrl}" alt=""><img class="lda-ball-img lda-ball-img-hover" src="${hoverUrl}" alt="">`;
