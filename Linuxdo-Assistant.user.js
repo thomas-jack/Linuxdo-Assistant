@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      4.6.0
+// @version      5.0.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -14,6 +14,7 @@
 // @connect      connect.linux.do
 // @connect      credit.linux.do
 // @connect      cdk.linux.do
+// @connect      linux.do
 // @connect      raw.githubusercontent.com
 // @run-at       document-idle
 // @license      MIT
@@ -80,8 +81,25 @@
             LAST_SKIP_UPDATE: 'lda_v5_last_skip_update',
             LAST_AUTO_CHECK: 'lda_v5_last_auto_check',
             GAIN_ANIM: 'lda_v5_gain_anim',
-            LAST_GAIN: 'lda_v5_last_gain'
+            LAST_GAIN: 'lda_v5_last_gain',
+            USE_CLASSIC_ICON: 'lda_v5_use_classic_icon',
+            ICON_CACHE: 'lda_v5_icon_cache',
+            ICON_SIZE: 'lda_v5_icon_size'
         }
+    };
+
+    // 小秘书图标尺寸配置
+    const SECRETARY_ICON_SIZES = {
+        sm: 58,   // 小
+        md: 88,   // 中
+        lg: 128   // 大
+    };
+
+    // 小秘书图片配置
+    const SECRETARY_ICONS = {
+        normal: 'https://linux.do/uploads/default/original/4X/e/0/5/e05b8f39191aa12af9926e2b6a6ebeb11b9e9a5e.png',
+        hover: 'https://linux.do/uploads/default/original/4X/d/3/6/d36a450d7fea67f9d62b0612f9d1a21fbfac7bf5.png',
+        version: '1' // 用于缓存版本控制
     };
     const AUTO_REFRESH_MS = 30 * 60 * 1000; // 半小时定时刷新
 
@@ -116,6 +134,11 @@
             current_score: "当前分",
             base_value: "基准值",
             set_gain_anim: "涨分动画提示",
+            set_classic_icon: "经典图标",
+            set_icon_size: "图标大小",
+            icon_size_sm: "小",
+            icon_size_md: "中",
+            icon_size_lg: "大",
             recent: "近7日收支",
             no_rec: "暂无记录",
             income: "收入",
@@ -210,6 +233,11 @@
             current_score: "Current",
             base_value: "Base",
             set_gain_anim: "Gain Animation",
+            set_classic_icon: "Classic Icon",
+            set_icon_size: "Icon Size",
+            icon_size_sm: "S",
+            icon_size_md: "M",
+            icon_size_lg: "L",
             recent: "Recent Activity",
             no_rec: "No activity",
             income: "Income",
@@ -662,6 +690,59 @@
         .lda-ball.dragging { cursor: grabbing; transform: scale(1.12); box-shadow: 0 12px 28px rgba(59, 130, 246, 0.55); }
         .lda-ball svg { width: 20px; height: 20px; fill: currentColor; pointer-events: none; position: relative; z-index: 1; }
 
+        /* 小秘书图标模式 - 尺寸由JS动态设置 */
+        .lda-ball.lda-ball-secretary {
+            background: transparent;
+            box-shadow: none;
+            border-radius: 50%;
+        }
+        .lda-ball.lda-ball-secretary::after { display: none; }
+        .lda-ball.lda-ball-secretary:hover {
+            transform: scale(1.08);
+            box-shadow: none;
+        }
+        .lda-ball.lda-ball-secretary.dragging {
+            transform: scale(1.12);
+            box-shadow: none;
+        }
+        .lda-ball-img {
+            width: 100%; height: 100%;
+            object-fit: contain;
+            pointer-events: none;
+            position: absolute;
+            top: 0; left: 0;
+            transition: opacity 0.2s ease;
+            border-radius: 50%;
+        }
+        .lda-ball-img-normal { opacity: 1; }
+        .lda-ball-img-hover { opacity: 0; }
+        .lda-ball.lda-ball-secretary:hover .lda-ball-img-normal { opacity: 0; }
+        .lda-ball.lda-ball-secretary:hover .lda-ball-img-hover { opacity: 1; }
+
+        /* 经典图标模式（保持原样） */
+        .lda-ball.lda-ball-classic {
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            box-shadow: 0 8px 22px rgba(59, 130, 246, 0.35), 0 0 0 1px var(--lda-ball-ring);
+            width: var(--lda-ball-size); height: var(--lda-ball-size);
+        }
+        .lda-ball.lda-ball-classic::after {
+            content: "";
+            position: absolute;
+            inset: 2px;
+            border-radius: inherit;
+            background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.25), transparent 55%);
+            pointer-events: none;
+            opacity: 0.9;
+        }
+        .lda-ball.lda-ball-classic:hover {
+            transform: scale(1.08) rotate(6deg);
+            box-shadow: 0 10px 26px rgba(59, 130, 246, 0.45);
+        }
+        .lda-ball.lda-ball-classic.dragging {
+            transform: scale(1.12);
+            box-shadow: 0 12px 28px rgba(59, 130, 246, 0.55);
+        }
+
         /* 面板 */
         .lda-panel {
             position: absolute; top: 0; right: 0;
@@ -1079,8 +1160,11 @@
                 tabOrder: Utils.get(CONFIG.KEYS.TAB_ORDER, ['trust', 'credit', 'cdk']), // 标签顺序
                 refreshInterval: Utils.get(CONFIG.KEYS.REFRESH_INTERVAL, 30), // 分钟，0 为关闭
                 opacity: Utils.get(CONFIG.KEYS.OPACITY, 1),
-                gainAnim: Utils.get(CONFIG.KEYS.GAIN_ANIM, true) // 涨分动画，默认开启
+                gainAnim: Utils.get(CONFIG.KEYS.GAIN_ANIM, true), // 涨分动画，默认开启
+                useClassicIcon: Utils.get(CONFIG.KEYS.USE_CLASSIC_ICON, false), // 使用经典地球图标，默认关闭
+                iconSize: Utils.get(CONFIG.KEYS.ICON_SIZE, 'sm') // 小秘书图标尺寸，默认小
             };
+            this.iconCache = Utils.get(CONFIG.KEYS.ICON_CACHE, null); // 小秘书图标缓存
             this.cdkCache = Utils.get(CONFIG.KEYS.CACHE_CDK, null);
             this.trustData = Utils.get(CONFIG.KEYS.CACHE_TRUST_DATA, null);
             this.creditData = Utils.get(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
@@ -1119,6 +1203,8 @@
             }
             GM_addStyle(Styles);
             this.renderLayout();
+            this.updateBallIcon(); // 初始化悬浮球图标
+            this.loadSecretaryIcons().then(() => this.updateBallIcon()); // 异步加载并缓存图标
             this.bindGlobalEvents();
             this.startUserWatcher();
             this.applyTheme();
@@ -1151,9 +1237,7 @@
             // 根据 tabOrder 获取排序后的标签
             const orderedTabs = this.state.tabOrder.map(key => tabMap[key]);
             root.innerHTML = Utils.html`
-                <div class="lda-ball" title="${this.t('title')}">
-                    <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
-                </div>
+                <div class="lda-ball" title="${this.t('title')}"></div>
                 <div class="lda-panel">
                     <div class="lda-head">
                         <div class="lda-title">Linux.do 小秘书</div>
@@ -1213,7 +1297,7 @@
         }
 
         renderSettings() {
-            const { lang, height, expand, tabOrder, refreshInterval, opacity, gainAnim } = this.state;
+            const { lang, height, expand, tabOrder, refreshInterval, opacity, gainAnim, useClassicIcon, iconSize } = this.state;
             const r = (val, cur) => val === cur ? 'active' : '';
             const opacityVal = Math.max(0.5, Math.min(1, Number(opacity) || 1));
             const opacityPercent = Math.round(opacityVal * 100);
@@ -1254,7 +1338,7 @@
             // ✅ 隐藏“清除缓存”功能入口：不再渲染按钮（保留内部逻辑以备将来启用）
             this.dom.setting.innerHTML = Utils.html`
                 <div class="lda-card">
-                    <div class="lda-opt">
+                    <div class="lda-opt" style="flex-wrap:wrap;">
                         <div style="display:flex;align-items:center;gap:8px;">
                             <label class="lda-switch"><input type="checkbox" id="inp-expand" ${expand ? 'checked' : ''}><span class="lda-slider"></span></label>
                             <div class="lda-opt-label" style="font-size:12px">${this.t('set_auto')}</div>
@@ -1262,6 +1346,18 @@
                         <div style="display:flex;align-items:center;gap:8px;">
                             <label class="lda-switch"><input type="checkbox" id="inp-gain-anim" ${gainAnim ? 'checked' : ''}><span class="lda-slider"></span></label>
                             <div class="lda-opt-label" style="font-size:12px">${this.t('set_gain_anim')}</div>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <label class="lda-switch"><input type="checkbox" id="inp-classic-icon" ${useClassicIcon ? 'checked' : ''}><span class="lda-slider"></span></label>
+                            <div class="lda-opt-label" style="font-size:12px">${this.t('set_classic_icon')}</div>
+                        </div>
+                    </div>
+                    <div class="lda-opt" id="lda-icon-size-opt" style="${useClassicIcon ? 'display:none;' : ''}">
+                        <div class="lda-opt-label">${this.t('set_icon_size')}</div>
+                        <div class="lda-seg" id="grp-icon-size">
+                            <div class="lda-seg-item ${r('sm', iconSize)}" data-v="sm">${this.t('icon_size_sm')}</div>
+                            <div class="lda-seg-item ${r('md', iconSize)}" data-v="md">${this.t('icon_size_md')}</div>
+                            <div class="lda-seg-item ${r('lg', iconSize)}" data-v="lg">${this.t('icon_size_lg')}</div>
                         </div>
                     </div>
                     <div class="lda-opt">
@@ -1581,6 +1677,27 @@
                     this.state.gainAnim = e.target.checked;
                     Utils.set(CONFIG.KEYS.GAIN_ANIM, e.target.checked);
                 }
+                if (e.target.id === 'inp-classic-icon') {
+                    this.state.useClassicIcon = e.target.checked;
+                    Utils.set(CONFIG.KEYS.USE_CLASSIC_ICON, e.target.checked);
+                    this.updateBallIcon();
+                    // 切换图标尺寸选项的显示/隐藏
+                    const iconSizeOpt = Utils.el('#lda-icon-size-opt', this.dom.setting);
+                    if (iconSizeOpt) {
+                        iconSizeOpt.style.display = e.target.checked ? 'none' : '';
+                    }
+                    // 如果切换到小秘书模式且没有缓存，重新加载图标
+                    if (!e.target.checked && !this.iconCache) {
+                        this.loadSecretaryIcons().then(() => this.updateBallIcon());
+                    }
+                }
+                const iconSizeNode = e.target.closest('#grp-icon-size .lda-seg-item');
+                if (iconSizeNode) {
+                    this.state.iconSize = iconSizeNode.dataset.v;
+                    Utils.set(CONFIG.KEYS.ICON_SIZE, this.state.iconSize);
+                    this.updateBallIcon();
+                    this.renderSettings();
+                }
                 if (wasOpen) this.togglePanel(true);
             };
 
@@ -1801,6 +1918,91 @@
             }
 
             Utils.set(CONFIG.KEYS.CACHE_META, this.lastFetch);
+        }
+
+        // ===== 小秘书图标缓存管理 =====
+        async loadSecretaryIcons() {
+            // 如果使用经典图标，不需要加载
+            if (this.state.useClassicIcon) return;
+
+            // 检查缓存是否有效
+            if (this.iconCache && this.iconCache.version === SECRETARY_ICONS.version && this.iconCache.normal && this.iconCache.hover) {
+                return; // 缓存有效，直接使用
+            }
+
+            // 需要重新下载并缓存
+            try {
+                const [normalBase64, hoverBase64] = await Promise.all([
+                    this.fetchImageAsBase64(SECRETARY_ICONS.normal),
+                    this.fetchImageAsBase64(SECRETARY_ICONS.hover)
+                ]);
+
+                if (normalBase64 && hoverBase64) {
+                    this.iconCache = {
+                        version: SECRETARY_ICONS.version,
+                        normal: normalBase64,
+                        hover: hoverBase64
+                    };
+                    Utils.set(CONFIG.KEYS.ICON_CACHE, this.iconCache);
+                }
+            } catch (err) {
+                console.warn('[LDA] 小秘书图标加载失败，使用远程URL', err);
+            }
+        }
+
+        fetchImageAsBase64(url) {
+            return new Promise((resolve) => {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: url,
+                    responseType: 'blob',
+                    onload: (response) => {
+                        if (response.status === 200 && response.response) {
+                            const reader = new FileReader();
+                            reader.onloadend = () => resolve(reader.result);
+                            reader.onerror = () => resolve(null);
+                            reader.readAsDataURL(response.response);
+                        } else {
+                            resolve(null);
+                        }
+                    },
+                    onerror: () => resolve(null),
+                    ontimeout: () => resolve(null)
+                });
+            });
+        }
+
+        getSecretaryIconUrl(type) {
+            // type: 'normal' | 'hover'
+            if (this.iconCache && this.iconCache[type]) {
+                return this.iconCache[type];
+            }
+            return type === 'normal' ? SECRETARY_ICONS.normal : SECRETARY_ICONS.hover;
+        }
+
+        updateBallIcon() {
+            const ball = this.dom.ball;
+            if (!ball) return;
+
+            if (this.state.useClassicIcon) {
+                // 经典地球图标
+                ball.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>`;
+                ball.classList.remove('lda-ball-secretary');
+                ball.classList.add('lda-ball-classic');
+                ball.style.width = '';
+                ball.style.height = '';
+            } else {
+                // 小秘书图标
+                const normalUrl = this.getSecretaryIconUrl('normal');
+                const hoverUrl = this.getSecretaryIconUrl('hover');
+                ball.innerHTML = `<img class="lda-ball-img lda-ball-img-normal" src="${normalUrl}" alt=""><img class="lda-ball-img lda-ball-img-hover" src="${hoverUrl}" alt="">`;
+                ball.classList.remove('lda-ball-classic');
+                ball.classList.add('lda-ball-secretary');
+                // 设置尺寸
+                const size = SECRETARY_ICON_SIZES[this.state.iconSize] || SECRETARY_ICON_SIZES.sm;
+                ball.style.width = `${size}px`;
+                ball.style.height = `${size}px`;
+            }
         }
 
 
