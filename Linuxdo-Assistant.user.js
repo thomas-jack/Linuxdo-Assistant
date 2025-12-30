@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      5.4.0
+// @version      5.5.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -23,10 +23,19 @@
 // ==/UserScript==
 
 /**
- * 更新日志 v5.4.0
- * - 修复：悬浮球展开面板后再收起，位置会偏移的问题
- *   原因：updatePanelSide() 不应在面板展开时重新计算位置（此时悬浮球已隐藏，布局数据不准确）
- *   方案：改为从存储的位置值计算面板方向，不再修改 right/top 样式
+ * 更新日志 v5.5.0
+ * - 修复：Firefox + Tampermonkey 下无法获取 Credit 和 Trust 数据的问题
+ *   原因：Firefox 对跨域请求需要正确的 Referer 头才能发送 cookie
+ *   方案：为 Credit 和 Trust 的跨域请求添加相应的 Referer 头
+ * - 优化：Utils.request 方法支持自定义 headers 合并
+ * - 优化：Credit 授权过期提示更友好，区分用户是否登录主站
+ * - 新增：顶栏按钮显示模式（可在设置中切换）
+ * - 新增：信任等级页显示注册天数
+ * - 优化：授权/刷新按钮添加 loading 状态
+ *
+ * 历史更新：
+ * v5.4.0 - 修复悬浮球展开面板后位置偏移问题
+ * v5.3.0 - 修复 Firefox + Tampermonkey 跨域 cookie 问题（withCredentials）
  */
 
 (function () {
@@ -91,7 +100,8 @@
             LAST_GAIN: 'lda_v5_last_gain',
             USE_CLASSIC_ICON: 'lda_v5_use_classic_icon',
             ICON_CACHE: 'lda_v5_icon_cache',
-            ICON_SIZE: 'lda_v5_icon_size'
+            ICON_SIZE: 'lda_v5_icon_size',
+            DISPLAY_MODE: 'lda_v5_display_mode'
         }
     };
 
@@ -146,6 +156,11 @@
             icon_size_sm: "小",
             icon_size_md: "中",
             icon_size_lg: "大",
+            set_display_mode: "显示模式",
+            display_mode_float: "悬浮球",
+            display_mode_header: "顶栏按钮",
+            set_show_header_btn: "显示顶栏按钮",
+            set_show_float_icon: "显示悬浮图标",
             recent: "近7日收支",
             no_rec: "暂无记录",
             income: "收入",
@@ -167,6 +182,7 @@
             link_tip: "前往网页版",
             refresh_tip_btn: "刷新数据",
             refresh_done: "刷新完毕",
+            refresh_no_data: "未获取到数据",
             check_update: "检查更新",
             checking: "检查中...",
             new_version: "发现新版本",
@@ -175,6 +191,7 @@
             rank: "总排名",
             rank_today: "今日",
             score: "积分",
+            member_days: "注册天数",
             credit_not_auth: "尚未登录 Credit",
             credit_auth_tip: "需先完成授权才能查看积分数据",
             credit_go_auth: "前往登录",
@@ -232,7 +249,7 @@
             celebrate_msg_lv3: "Enjoy all the privileges of Trust Level 3!",
             btn_details: "Details",
             btn_collapse: "Collapse",
-            credit_keep_cache_tip: "Authorization check failed; showing cached data.",
+            credit_keep_cache_tip: "Credit authorization expired, showing cached data temporarily.",
             balance: "Balance",
             daily_limit: "Daily Limit",
             estimated_gain: "Est. Tomorrow",
@@ -245,6 +262,11 @@
             icon_size_sm: "S",
             icon_size_md: "M",
             icon_size_lg: "L",
+            set_display_mode: "Display Mode",
+            display_mode_float: "Float",
+            display_mode_header: "Header",
+            set_show_header_btn: "Show Header Button",
+            set_show_float_icon: "Show Float Icon",
             recent: "Recent Activity",
             no_rec: "No activity",
             income: "Income",
@@ -266,6 +288,7 @@
             link_tip: "Open Website",
             refresh_tip_btn: "Refresh",
             refresh_done: "Refreshed",
+            refresh_no_data: "No data available",
             check_update: "Check Update",
             checking: "Checking...",
             new_version: "New Version",
@@ -274,6 +297,7 @@
             rank: "Rank",
             rank_today: "Today",
             score: "Score",
+            member_days: "Days",
             credit_not_auth: "Credit Not Logged In",
             credit_auth_tip: "Please authorize to view credit data",
             credit_go_auth: "Go to Login",
@@ -314,7 +338,7 @@
     // 工具函数
     class Utils {
         static async request(url, options = {}) {
-            const { retries = 3, timeout = 8000, withCredentials = false, ...validOptions } = options;
+            const { retries = 3, timeout = 8000, withCredentials = false, headers = {}, ...validOptions } = options;
             const attempts = Math.max(1, retries);
             let lastErr;
             for (let i = 0; i < attempts; i++) {
@@ -323,7 +347,7 @@
                         const reqConfig = {
                             method: 'GET',
                             url,
-                            headers: { 'Cache-Control': 'no-cache' },
+                            headers: { 'Cache-Control': 'no-cache', ...headers },
                             anonymous: false, // 确保跨域请求发送 cookie
                             timeout,
                             ...validOptions,
@@ -490,7 +514,8 @@
 
         // 从 connect.linux.do 的欢迎语中解析"用户名 + 当前等级"（参考 v4 逻辑）
         static async fetchConnectWelcome() {
-            const html = await Utils.request(CONFIG.API.TRUST, { timeout: 15000, retries: 2, withCredentials: true });
+            // Firefox 需要 Referer 头才能正确发送跨域 cookie
+            const html = await Utils.request(CONFIG.API.TRUST, { timeout: 15000, retries: 2, withCredentials: true, headers: { 'Referer': 'https://connect.linux.do/' } });
             const doc = new DOMParser().parseFromString(html, 'text/html');
             const bodyText = doc.body?.textContent || '';
             const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
@@ -755,6 +780,73 @@
             box-shadow: 0 12px 28px rgba(59, 130, 246, 0.55);
         }
 
+        /* 顶栏按钮模式 */
+        .lda-header-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            margin-left: 8px;
+            margin-right: 8px;
+            border-radius: 6px;
+            background: var(--primary-low, rgba(59, 130, 246, 0.1));
+            color: var(--primary, #3b82f6);
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: none;
+            white-space: nowrap;
+        }
+        .lda-header-btn:hover {
+            background: var(--primary-low-mid, rgba(59, 130, 246, 0.2));
+            transform: translateY(-1px);
+        }
+        .lda-header-btn svg {
+            width: 16px;
+            height: 16px;
+            fill: currentColor;
+        }
+        .lda-header-btn-img {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            object-fit: contain;
+            transition: opacity 0.2s ease;
+        }
+        .lda-header-btn-img-wrap {
+            position: relative;
+            width: 24px;
+            height: 24px;
+        }
+        .lda-header-btn-img-wrap img {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        .lda-header-btn-img-normal { opacity: 1; }
+        .lda-header-btn-img-hover { opacity: 0; }
+        .lda-header-btn:hover .lda-header-btn-img-normal { opacity: 0; }
+        .lda-header-btn:hover .lda-header-btn-img-hover { opacity: 1; }
+
+        /* 顶栏模式下的面板定位 */
+        #lda-root.lda-header-mode {
+            position: fixed;
+            top: auto;
+            right: 12px;
+            z-index: var(--lda-z);
+        }
+        #lda-root.lda-header-mode .lda-panel {
+            position: fixed;
+            top: 60px;
+            right: 12px;
+            left: auto;
+            transform-origin: top right;
+        }
+        #lda-root.lda-header-mode .lda-ball {
+            display: none !important;
+        }
+
         /* 面板 */
         .lda-panel {
             position: absolute; top: 0; right: 0;
@@ -920,14 +1012,50 @@
         .lda-auth-title { font-size: 15px; font-weight: 600; color: var(--lda-fg); margin-bottom: 6px; }
         .lda-auth-tip { font-size: 12px; color: var(--lda-dim); margin-bottom: 16px; }
         .lda-auth-btns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
-        .lda-auth-btn {
-            display: inline-block; padding: 10px 20px; background: var(--lda-accent); color: #fff;
-            border-radius: 8px; font-size: 13px; font-weight: 600; text-decoration: none;
+        .lda-auth-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
+        .lda-auth-btn,
+        a.lda-auth-btn,
+        a.lda-auth-btn:link,
+        a.lda-auth-btn:visited,
+        a.lda-auth-btn:hover,
+        a.lda-auth-btn:active,
+        button.lda-auth-btn {
+            display: inline-block; padding: 10px 20px; background: var(--lda-accent); color: #fff !important;
+            border-radius: 8px; font-size: 13px; font-weight: 600; text-decoration: none !important;
             transition: all 0.2s; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3); border: none; cursor: pointer;
         }
-        .lda-auth-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4); }
-        .lda-auth-btn.secondary { background: rgba(125,125,125,0.15); color: var(--lda-fg); box-shadow: none; }
-        .lda-auth-btn.secondary:hover { background: rgba(125,125,125,0.25); transform: none; }
+        .lda-auth-btn:hover,
+        a.lda-auth-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4); }
+        .lda-auth-btn.secondary,
+        a.lda-auth-btn.secondary,
+        a.lda-auth-btn.secondary:link,
+        a.lda-auth-btn.secondary:visited,
+        a.lda-auth-btn.secondary:hover,
+        a.lda-auth-btn.secondary:active,
+        button.lda-auth-btn.secondary { background: rgba(125,125,125,0.15); color: var(--lda-fg) !important; box-shadow: none; }
+        .lda-auth-btn.secondary:hover,
+        a.lda-auth-btn.secondary:hover { background: rgba(125,125,125,0.25); transform: none; }
+        /* 授权按钮 loading 状态 */
+        .lda-auth-btn.loading {
+            position: relative;
+            pointer-events: none;
+            opacity: 0.7;
+        }
+        .lda-auth-btn.loading::after {
+            content: '';
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            top: 50%;
+            left: 50%;
+            margin-left: -7px;
+            margin-top: -7px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: lda-spin 0.8s linear infinite;
+        }
+        .lda-auth-btn.loading span { visibility: hidden; }
         .lda-row-rec:last-child { border: none; }
         .lda-amt { font-weight: 600; font-family: monospace; }
 
@@ -1174,7 +1302,8 @@
                 opacity: Utils.get(CONFIG.KEYS.OPACITY, 1),
                 gainAnim: Utils.get(CONFIG.KEYS.GAIN_ANIM, true), // 涨分动画，默认开启
                 useClassicIcon: Utils.get(CONFIG.KEYS.USE_CLASSIC_ICON, false), // 使用经典地球图标，默认关闭
-                iconSize: Utils.get(CONFIG.KEYS.ICON_SIZE, 'sm') // 小秘书图标尺寸，默认小
+                iconSize: Utils.get(CONFIG.KEYS.ICON_SIZE, 'sm'), // 小秘书图标尺寸，默认小
+                displayMode: Utils.get(CONFIG.KEYS.DISPLAY_MODE, 'float') // 显示模式：float（悬浮球）/ header（顶栏按钮）
             };
             this.iconCache = Utils.get(CONFIG.KEYS.ICON_CACHE, null); // 小秘书图标缓存
             this.cdkCache = Utils.get(CONFIG.KEYS.CACHE_CDK, null);
@@ -1215,15 +1344,21 @@
             }
             GM_addStyle(Styles);
             this.renderLayout();
-            this.updateBallIcon(); // 初始化悬浮球图标
-            this.loadSecretaryIcons().then(() => this.updateBallIcon()); // 异步加载并缓存图标
+            const isHeaderMode = this.state.displayMode === 'header';
+            if (!isHeaderMode) {
+                this.updateBallIcon(); // 初始化悬浮球图标
+                this.loadSecretaryIcons().then(() => this.updateBallIcon()); // 异步加载并缓存图标
+            }
             this.bindGlobalEvents();
             this.startUserWatcher();
             this.applyTheme();
             this.applyHeight();
             this.applyOpacity();
-            this.restorePos();
-            this.updatePanelSide();
+            // 顶栏模式不需要恢复位置和计算面板方向
+            if (!isHeaderMode) {
+                this.restorePos();
+                this.updatePanelSide();
+            }
             this.renderFromCacheAll();
             this.prewarmAll();
             this.startAutoRefreshTimer();
@@ -1237,9 +1372,10 @@
         t(key) { return I18N[this.state.lang][key] || key; }
 
         renderLayout() {
+            const isHeaderMode = this.state.displayMode === 'header';
             const root = document.createElement('div');
             root.id = 'lda-root';
-            root.className = 'lda-side-left';
+            root.className = isHeaderMode ? 'lda-header-mode' : 'lda-side-left';
             // 定义所有标签的映射
             const tabMap = {
                 trust: { key: 'trust', label: this.t('tab_trust') },
@@ -1301,15 +1437,58 @@
                 slowTips: Utils.els('.lda-slow-tip', root),
                 themeBtn: Utils.el('#lda-btn-theme', root),
                 tabs: Utils.els('.lda-tab', root),
-                head: Utils.el('.lda-head', root)
+                head: Utils.el('.lda-head', root),
+                headerBtn: null
             };
+
+            // 顶栏按钮模式：在 header-buttons 中创建按钮
+            if (isHeaderMode) {
+                this.createHeaderButton();
+            }
 
             this.renderSettings();
             this.updateThemeIcon();
         }
 
+        // 创建顶栏按钮
+        createHeaderButton() {
+            // 移除已存在的顶栏按钮
+            const existingBtn = document.getElementById('lda-header-btn');
+            if (existingBtn) existingBtn.remove();
+
+            const headerButtons = document.querySelector('.header-buttons');
+            if (!headerButtons) {
+                // 如果找不到 header-buttons，延迟重试
+                setTimeout(() => this.createHeaderButton(), 500);
+                return;
+            }
+
+            const btn = document.createElement('span');
+            btn.id = 'lda-header-btn';
+            btn.className = 'lda-header-btn';
+            btn.title = this.t('title');
+
+            // 根据图标设置决定显示内容
+            if (this.state.useClassicIcon) {
+                btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>小秘书`;
+            } else {
+                // 使用小秘书图标（带 hover 效果）
+                const normalUrl = this.iconCache?.normal || SECRETARY_ICONS.normal;
+                const hoverUrl = this.iconCache?.hover || SECRETARY_ICONS.hover;
+                btn.innerHTML = `<span class="lda-header-btn-img-wrap"><img class="lda-header-btn-img lda-header-btn-img-normal" src="${normalUrl}" alt=""><img class="lda-header-btn-img lda-header-btn-img-hover" src="${hoverUrl}" alt=""></span>小秘书`;
+            }
+
+            btn.onclick = (e) => {
+                e.stopPropagation();
+                this.togglePanel(this.dom.panel.style.display !== 'flex');
+            };
+
+            headerButtons.insertBefore(btn, headerButtons.firstChild);
+            this.dom.headerBtn = btn;
+        }
+
         renderSettings() {
-            const { lang, height, expand, tabOrder, refreshInterval, opacity, gainAnim, useClassicIcon, iconSize } = this.state;
+            const { lang, height, expand, tabOrder, refreshInterval, opacity, gainAnim, useClassicIcon, iconSize, displayMode } = this.state;
             const r = (val, cur) => val === cur ? 'active' : '';
             const opacityVal = Math.max(0.5, Math.min(1, Number(opacity) || 1));
             const opacityPercent = Math.round(opacityVal * 100);
@@ -1362,6 +1541,10 @@
                         <div style="display:flex;align-items:center;gap:8px;">
                             <label class="lda-switch"><input type="checkbox" id="inp-classic-icon" ${useClassicIcon ? 'checked' : ''}><span class="lda-slider"></span></label>
                             <div class="lda-opt-label" style="font-size:12px">${this.t('set_classic_icon')}</div>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <label class="lda-switch"><input type="checkbox" id="inp-header-mode" ${displayMode === 'header' ? 'checked' : ''}><span class="lda-slider"></span></label>
+                            <div class="lda-opt-label" style="font-size:12px">${displayMode === 'header' ? this.t('set_show_float_icon') : this.t('set_show_header_btn')}</div>
                         </div>
                     </div>
                     <div class="lda-opt" id="lda-icon-size-opt" style="${useClassicIcon ? 'display:none;' : ''}">
@@ -1710,6 +1893,20 @@
                     this.updateBallIcon();
                     this.renderSettings();
                 }
+                if (e.target.id === 'inp-header-mode') {
+                    const newMode = e.target.checked ? 'header' : 'float';
+                    if (newMode !== this.state.displayMode) {
+                        this.state.displayMode = newMode;
+                        Utils.set(CONFIG.KEYS.DISPLAY_MODE, newMode);
+                        // 移除旧的顶栏按钮（如果存在）
+                        const oldHeaderBtn = document.getElementById('lda-header-btn');
+                        if (oldHeaderBtn) oldHeaderBtn.remove();
+                        // 重新初始化以应用新的显示模式
+                        this.dom.root.remove();
+                        this.init(wasOpen);
+                        return;
+                    }
+                }
                 if (wasOpen) this.togglePanel(true);
             };
 
@@ -1740,7 +1937,10 @@
             window.addEventListener('focus', () => this.refreshOnFocusIfNeeded());
 
             window.addEventListener('resize', () => {
-                this.updatePanelSide();
+                // 顶栏模式不需要更新面板方向
+                if (this.state.displayMode !== 'header') {
+                    this.updatePanelSide();
+                }
             });
 
             this.initDrag();
@@ -2112,7 +2312,7 @@
             const leftBtnHtml = leftUrl
                 ? `<a href="${leftUrl}" target="_blank" rel="noopener"
                         class="lda-auth-btn secondary" id="btn-go-${page}">
-                        ${leftText || this.t('link_tip')} →
+                        <span>${leftText || this.t('link_tip')} →</span>
                    </a>`
                 : '';
 
@@ -2128,7 +2328,7 @@
                     <div class="lda-auth-tip">${tip}</div>
                     <div class="lda-auth-btns">
                         ${leftBtnHtml}
-                        <button class="lda-auth-btn" id="btn-retry-${page}">${this.t('network_error_retry')}</button>
+                        <button class="lda-auth-btn" id="btn-retry-${page}"><span>${this.t('network_error_retry')}</span></button>
                     </div>
                 </div>
             `;
@@ -2136,6 +2336,7 @@
             const retryBtn = Utils.el(`#btn-retry-${page}`, wrap);
             if (retryBtn) retryBtn.onclick = (e) => {
                 e.stopPropagation();
+                retryBtn.classList.add('loading');
                 onRetry?.();
             };
 
@@ -2223,23 +2424,24 @@
                     this.dom.panel.appendChild(anim);
                 }
             } else {
-                // 悬浮球模式：根据位置在左上/右上角显示
-                const ball = this.dom.ball;
-                if (!ball) return;
+                // 面板未展开时：根据显示模式决定动画位置
+                const isHeaderMode = this.state.displayMode === 'header';
+                const targetEl = isHeaderMode ? this.dom.headerBtn : this.dom.ball;
+                if (!targetEl) return;
 
-                const ballRect = ball.getBoundingClientRect();
-                const isRightHalf = ballRect.left > window.innerWidth / 2;
+                const targetRect = targetEl.getBoundingClientRect();
+                const isRightHalf = targetRect.left > window.innerWidth / 2;
 
                 anim.style.position = 'fixed';
-                anim.style.top = `${ballRect.top - 10}px`;
+                anim.style.top = `${targetRect.top - 10}px`;
 
                 if (isRightHalf) {
-                    // 悬浮球在右半边，动画显示在悬浮球左侧
-                    anim.style.right = `${window.innerWidth - ballRect.left + 8}px`;
+                    // 目标在右半边，动画显示在左侧
+                    anim.style.right = `${window.innerWidth - targetRect.left + 8}px`;
                     anim.style.left = 'auto';
                 } else {
-                    // 悬浮球在左半边，动画显示在悬浮球右侧
-                    anim.style.left = `${ballRect.right + 8}px`;
+                    // 目标在左半边，动画显示在右侧
+                    anim.style.left = `${targetRect.right + 8}px`;
                     anim.style.right = 'auto';
                 }
 
@@ -2392,7 +2594,8 @@
 
         // ===== 2级及以上用户数据获取（使用 connect.linux.do）=====
         async fetchHighLevelTrustData(knownLevel = null) {
-            const html = await Utils.request(CONFIG.API.TRUST, { withCredentials: true });
+            // Firefox 需要 Referer 头才能正确发送跨域 cookie
+            const html = await Utils.request(CONFIG.API.TRUST, { withCredentials: true, headers: { 'Referer': 'https://connect.linux.do/' } });
             const doc = new DOMParser().parseFromString(html, 'text/html');
             const bodyText = doc.body?.textContent || '';
             const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
@@ -2535,25 +2738,30 @@
                 </svg>
               </div>
               <div>
-                <div style="font-weight:800">${this.t('trust')}</div>
+                <div style="font-weight:800">${this.t('trust_not_login')}</div>
                 <div style="font-size:12px;color:var(--lda-dim);margin-top:2px;line-height:1.5">${this.t('trust_login_tip')}</div>
               </div>
             </div>
             <div class="lda-auth-actions">
-              <button class="lda-auth-btn primary" id="btn-go-login">${this.t('trust_go_login')}</button>
-              <button class="lda-auth-btn secondary" id="btn-retry-trust">${this.t('refresh')}</button>
+              <button class="lda-auth-btn primary" id="btn-go-login"><span>${this.t('trust_go_login')}</span></button>
+              <button class="lda-auth-btn secondary" id="btn-retry-trust"><span>${this.t('credit_refresh')}</span></button>
             </div>
           </div>`;
                         const btn = Utils.el('#btn-go-login', wrap);
                         if (btn) btn.onclick = () => location.href = '/login';
                         const retry = Utils.el('#btn-retry-trust', wrap);
-                        if (retry) retry.onclick = (e) => { e.stopPropagation(); this.refreshTrust(true); };
+                        if (retry) retry.onclick = (e) => {
+                            e.stopPropagation();
+                            retry.classList.add('loading');
+                            this.refreshTrust(true);
+                        };
                         this.stopRefreshWithMinDuration('trust');
+                        if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
                         endWait();
                         return;
                     }
 
-                    // DOM 无法确认：仍给出“刷新/前往登录”的入口
+                    // DOM 无法确认：仍给出"刷新/前往登录"的入口
                     this.focusFlags.trust = true;
                     wrap.innerHTML = `
           <div class="lda-card lda-auth-card">
@@ -2566,36 +2774,46 @@
                 </svg>
               </div>
               <div>
-                <div style="font-weight:800">${this.t('trust')}</div>
+                <div style="font-weight:800">${this.t('trust_not_login')}</div>
                 <div style="font-size:12px;color:var(--lda-dim);margin-top:2px;line-height:1.5">
                   ${this.t('trust_login_tip')}
                 </div>
               </div>
             </div>
             <div class="lda-auth-actions">
-              <button class="lda-auth-btn primary" id="btn-go-login">${this.t('trust_go_login')}</button>
-              <button class="lda-auth-btn secondary" id="btn-retry-trust">${this.t('refresh')}</button>
+              <button class="lda-auth-btn primary" id="btn-go-login"><span>${this.t('trust_go_login')}</span></button>
+              <button class="lda-auth-btn secondary" id="btn-retry-trust"><span>${this.t('credit_refresh')}</span></button>
             </div>
           </div>`;
                     const btn = Utils.el('#btn-go-login', wrap);
                     if (btn) btn.onclick = () => location.href = '/login';
                     const retry = Utils.el('#btn-retry-trust', wrap);
-                    if (retry) retry.onclick = (e) => { e.stopPropagation(); this.refreshTrust(true); };
+                    if (retry) retry.onclick = (e) => {
+                        e.stopPropagation();
+                        retry.classList.add('loading');
+                        this.refreshTrust(true);
+                    };
                     this.stopRefreshWithMinDuration('trust');
+                    if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
                     endWait();
                     return;
                 }
 
                 // ✅ 2) 已登录：拿 username + trust_level
+                let userInfoData = null;
                 if (userTrustLevel === null && username) {
-                    const ui = await Utils.fetchUserInfo(username);
-                    userTrustLevel = ui?.trust_level ?? null;
+                    userInfoData = await Utils.fetchUserInfo(username);
+                    userTrustLevel = userInfoData?.trust_level ?? null;
                 }
                 const levelText = userTrustLevel ?? '?';
                 if (username) this.ensureUserSig(this.makeUserSig({ username }));
 
-                // 并行获取排名数据（失败不阻断）
+                // 并行获取排名数据和用户信息（用于获取 created_at，失败不阻断）
                 const statsPromise = Utils.fetchForumStats().catch(() => null);
+                // 如果还没有 userInfoData，并行获取以获得 created_at
+                const userInfoPromise = (!userInfoData && username)
+                    ? Utils.fetchUserInfo(username).catch(() => null)
+                    : Promise.resolve(userInfoData);
 
                 // ✅ 3) 状态机：
                 //  - lv0-1：summary 成功 => 正常；失败 => 友好错误 UI（显示具体等级）
@@ -2615,6 +2833,7 @@
                             onRetry: () => this.refreshTrust({ manual: true, force: true })
                         });
                         this.stopRefreshWithMinDuration('trust');
+                        if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
                         endWait();
                         return;
                     }
@@ -2648,19 +2867,29 @@
                                 onRetry: () => this.refreshTrust({ manual: true, force: true })
                             });
                             this.stopRefreshWithMinDuration('trust');
+                            if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
                             endWait();
                             return;
                         }
                     }
                 }
 
-                // ✅ 4) 合并 stats
-                const forumStats = await statsPromise;
-                const statsData = forumStats ? {
-                    dailyRank: forumStats.dailyRank || null,
-                    globalRank: forumStats.globalRank || null,
-                    score: forumStats.score || null
-                } : null;
+                // ✅ 4) 合并 stats（并行等待 forumStats 和 userInfo）
+                const [forumStats, userInfo] = await Promise.all([statsPromise, userInfoPromise]);
+                // 计算注册天数
+                let memberDays = null;
+                const userCreatedAt = userInfo?.created_at;
+                if (userCreatedAt) {
+                    const createdDate = new Date(userCreatedAt);
+                    const now = new Date();
+                    memberDays = Math.floor((now - createdDate) / (1000 * 60 * 60 * 24));
+                }
+                const statsData = {
+                    dailyRank: forumStats?.dailyRank || null,
+                    globalRank: forumStats?.globalRank || null,
+                    score: forumStats?.score || null,
+                    memberDays: memberDays
+                };
 
                 // ✅ 5) 渲染并缓存
                 this.trustData = { basic, stats: statsData };
@@ -2679,6 +2908,7 @@
                     leftText: this.t('connect_open'),
                     onRetry: () => this.refreshTrust({ manual: true, force: true })
                 });
+                if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
             } finally {
                 this.stopRefreshWithMinDuration('trust');
                 endWait();
@@ -2697,11 +2927,12 @@
             const showConnectLink = true;
 
             let statsHtml = '';
-            if (stats.globalRank || stats.dailyRank || stats.score) {
+            if (stats.globalRank || stats.dailyRank || stats.score || stats.memberDays !== null) {
                 statsHtml = `<a href="${CONFIG.API.LINK_LEADERBOARD}" target="_blank" class="lda-stats-bar" id="btn-go-leaderboard">`;
                 if (stats.dailyRank) statsHtml += `<span class="lda-stat-item">${this.t('rank_today')}: <span class="num today">${stats.dailyRank}</span></span>`;
                 if (stats.globalRank) statsHtml += `<span class="lda-stat-item">${this.t('rank')}: <span class="num rank">${stats.globalRank}</span></span>`;
                 if (stats.score) statsHtml += `<span class="lda-stat-item">${this.t('score')}: <span class="num score">${Number(stats.score).toLocaleString()}</span></span>`;
+                if (stats.memberDays !== null) statsHtml += `<span class="lda-stat-item">${this.t('member_days')}: <span class="num days">${stats.memberDays}</span></span>`;
                 statsHtml += `</a>`;
             }
 
@@ -2896,8 +3127,10 @@
                 }
                 if (this.creditData) this.renderCredit(this.creditData);
 
-                const infoPromise = Utils.request(CONFIG.API.CREDIT_INFO, { withCredentials: true });
-                const statPromise = Utils.request(CONFIG.API.CREDIT_STATS, { withCredentials: true });
+                // Firefox 需要 Referer 头才能正确发送跨域 cookie
+                const creditHeaders = { 'Referer': 'https://credit.linux.do/home' };
+                const infoPromise = Utils.request(CONFIG.API.CREDIT_INFO, { withCredentials: true, headers: creditHeaders });
+                const statPromise = Utils.request(CONFIG.API.CREDIT_STATS, { withCredentials: true, headers: creditHeaders });
 
                 let info = null;
                 let stats = [];
@@ -2941,18 +3174,32 @@
                 if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
                 endWait();
             } catch (e) {
-                const isLogin = e?.status === 401 || e?.status === 403 || /unauthorized|not\s*login/i.test(e?.responseText || '');
+                const isAuthError = e?.status === 401 || e?.status === 403 || /unauthorized|not\s*login/i.test(e?.responseText || '');
 
-                if (isLogin) {
-                    // 如果已有可用缓存数据：不要强行覆盖成“未登录/需授权”，避免偶发 401 造成闪烁
+                if (isAuthError) {
+                    // 检查用户是否登录到 LinuxDO 主站
+                    const isUserLoggedIn = Utils.getLoginStateByDOM();
+                    // 如果已有可用缓存数据
                     const hasUsableCache = !!(this.creditData?.info && this.creditData.info.available_balance !== undefined);
-                    if (hasUsableCache) {
+
+                    // 如果用户已登录主站且有缓存，显示缓存数据并提示需要重新授权
+                    if (isUserLoggedIn === true && hasUsableCache) {
                         this.focusFlags.credit = true;
-                        this.showToast(this.t('credit_keep_cache_tip'));
+                        this.showToast(this.t('credit_keep_cache_tip'), 'warning', 3000);
                         try { this.renderCredit(this.creditData); } catch (_) { /* ignore */ }
                         this.stopRefreshWithMinDuration('credit');
                         endWait();
                         return;
+                    }
+
+                    // 如果用户未登录主站（isUserLoggedIn === false），则显示登录界面并清除缓存
+                    // 如果无法确定登录状态（isUserLoggedIn === null）但没有缓存，也显示授权界面
+                    if (isUserLoggedIn === false) {
+                        // 清除 credit 缓存数据
+                        this.creditData = null;
+                        this.lastFetch.credit = 0;
+                        Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
+                        Utils.set(CONFIG.KEYS.CACHE_META, this.lastFetch);
                     }
 
                     this.stopRefreshWithMinDuration('credit');
@@ -2965,14 +3212,20 @@
                             <div class="lda-auth-title">${this.t('credit_not_auth')}</div>
                             <div class="lda-auth-tip">${this.t('credit_auth_tip')}</div>
                             <div class="lda-auth-btns">
-                                <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-auth-btn" id="btn-go-credit">${this.t('credit_go_auth')} →</a>
-                                <button id="btn-credit-refresh" class="lda-auth-btn secondary">${this.t('credit_refresh')}</button>
+                                <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-auth-btn" id="btn-go-credit"><span>${this.t('credit_go_auth')} →</span></a>
+                                <button id="btn-credit-refresh" class="lda-auth-btn secondary"><span>${this.t('credit_refresh')}</span></button>
                             </div>
                         </div>
                     `;
-                    Utils.el('#btn-credit-refresh', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshCredit({ manual: true, force: true }); };
+                    const refreshBtn = Utils.el('#btn-credit-refresh', wrap);
+                    if (refreshBtn) refreshBtn.onclick = (ev) => {
+                        ev.stopPropagation();
+                        refreshBtn.classList.add('loading');
+                        this.refreshCredit({ manual: true, force: true });
+                    };
                     const go = Utils.el('#btn-go-credit', wrap);
                     if (go) go.onclick = () => { this.focusFlags.credit = true; };
+                    if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
                     endWait();
                     return;
                 }
@@ -2987,6 +3240,7 @@
                 });
 
                 this.stopRefreshWithMinDuration('credit');
+                if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
                 endWait();
             }
         }
@@ -3144,6 +3398,7 @@
             // ✅ 状态机：未登录/未授权 vs 其他失败
             if (isAuthLike(directErr)) {
                 this.renderCDKAuth();
+                if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
                 endWait();
                 return;
             }
@@ -3157,6 +3412,7 @@
                 onRetry: () => this.refreshCDK({ manual: true, force: true })
             });
 
+            if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
             endWait();
         }
 
@@ -3314,18 +3570,27 @@
                     <div class="lda-auth-title">${this.t('cdk_not_auth')}</div>
                     <div class="lda-auth-tip">${this.t('cdk_auth_tip')}</div>
                     <div class="lda-auth-btns">
-                        <a href="${CONFIG.API.LINK_CDK}" target="_blank" class="lda-auth-btn" id="btn-go-cdk">${this.t('cdk_go_auth')} →</a>
-                        <button id="btn-cdk-refresh" class="lda-auth-btn secondary">${this.t('cdk_refresh')}</button>
+                        <a href="${CONFIG.API.LINK_CDK}" target="_blank" class="lda-auth-btn" id="btn-go-cdk"><span>${this.t('cdk_go_auth')} →</span></a>
+                        <button id="btn-cdk-refresh" class="lda-auth-btn secondary"><span>${this.t('cdk_refresh')}</span></button>
                     </div>
                 </div>
             `;
-            Utils.el('#btn-cdk-refresh', wrap).onclick = (e) => { e.stopPropagation(); this.refreshCDK({ manual: true, force: true }); };
+            const refreshBtn = Utils.el('#btn-cdk-refresh', wrap);
+            if (refreshBtn) refreshBtn.onclick = (e) => {
+                e.stopPropagation();
+                refreshBtn.classList.add('loading');
+                this.refreshCDK({ manual: true, force: true });
+            };
             const go = Utils.el('#btn-go-cdk', wrap);
             if (go) go.onclick = () => { this.focusFlags.cdk = true; };
         }
 
         togglePanel(show) {
-            this.dom.ball.style.display = show ? 'none' : 'flex';
+            const isHeaderMode = this.state.displayMode === 'header';
+            // 顶栏模式不需要隐藏/显示悬浮球
+            if (!isHeaderMode) {
+                this.dom.ball.style.display = show ? 'none' : 'flex';
+            }
             this.dom.panel.style.display = show ? 'flex' : 'none';
             if (show) {
                 this.renderFromCacheAll();
@@ -3340,7 +3605,8 @@
                 }
                 this.refreshSlowTipForPage(this.activePage);
             }
-            if (show) this.updatePanelSide();
+            // 顶栏模式不需要更新面板方向
+            if (show && !isHeaderMode) this.updatePanelSide();
         }
 
         updatePanelSide() {
@@ -3393,6 +3659,9 @@
         }
 
         initDrag() {
+            // 顶栏模式不需要拖拽功能
+            if (this.state.displayMode === 'header') return;
+
             let isDrag = false, hasDragged = false, startX, startY, startR, startT;
 
             const onMove = (e) => {
