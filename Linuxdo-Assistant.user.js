@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      5.8.0
+// @version      5.9.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 主页筛选工具 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -74,7 +74,7 @@
                 time_read: { name: '阅读时间', target: 3600, unit: 'seconds' } // 60分钟
             }
         },
-        CACHE_SCHEMA_VERSION: 2,
+        CACHE_SCHEMA_VERSION: 3, // 递增以触发 sieveEnabled 重置为 false
         // 保持 v4 键名以维持配置
         KEYS: {
             POS: 'lda_v4_pos',
@@ -267,6 +267,8 @@
             sieve_status_filtering: "筛选中...",
             sieve_status_done: "筛选完毕",
             sieve_status_end: "已到底部",
+            sieve_status_no_filter: "无筛选条件",
+            sieve_status_no_more: "暂无更多内容",
             sieve_no_preset: "暂无预设",
             sieve_tip: "仅在首页生效",
             // 设置页分类
@@ -411,6 +413,8 @@
             sieve_status_filtering: "Filtering...",
             sieve_status_done: "Done",
             sieve_status_end: "End of list",
+            sieve_status_no_filter: "No filter selected",
+            sieve_status_no_more: "No more content",
             sieve_no_preset: "No presets",
             sieve_tip: "Homepage only",
             // Settings sub-tabs
@@ -449,9 +453,18 @@
                     });
                     return res;
                 } catch (e) {
+                    // 401/403 认证错误不重试，直接抛出
                     if (e?.status === 401 || e?.status === 403) throw e;
+                    // 429 请求过多：尊重 Retry-After 或使用较长延迟，且不再重试
+                    if (e?.status === 429) {
+                        const retryAfter = parseInt(e?.responseHeaders?.match(/retry-after:\s*(\d+)/i)?.[1] || '60', 10);
+                        console.warn(`[LDA] 429 Too Many Requests, Retry-After: ${retryAfter}s, 停止重试`);
+                        throw e; // 429 直接抛出，不再重试
+                    }
                     lastErr = e;
                     if (i === attempts - 1) throw lastErr;
+                    // 重试前等待，避免短时间内发送大量请求（指数退避：1s, 2s, 4s...）
+                    await new Promise(r => setTimeout(r, 1000 * Math.pow(2, i)));
                 }
             }
             throw lastErr;
@@ -686,12 +699,19 @@
                     try {
                         const r = await fetch(url, { signal: controller.signal });
                         clearTimeout(timer);
+                        // 429 请求过多：直接返回 null，不重试
+                        if (r.status === 429) {
+                            console.warn(`[LDA] 429 Too Many Requests for ${url}, 停止重试`);
+                            return null;
+                        }
                         if (!r.ok) throw new Error(`http ${r.status}`);
                         return await r.json();
                     } catch (e) {
                         clearTimeout(timer);
                         lastErr = e;
                         if (i === 2) return null;
+                        // 重试前等待，避免短时间内发送大量请求（指数退避：1s, 2s）
+                        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, i)));
                     }
                 }
                 return null;
@@ -2134,6 +2154,8 @@
             }
             
             this.updateAllBtns();
+            this._stagnantCount = 0;  // 重置停滞计数
+            this._lastTotalRows = 0;
             this.filterTopics();
         }
 
@@ -2191,6 +2213,8 @@
                 Utils.set(CONFIG.KEYS.SIEVE_TAGS, this.tagStates);
             }
             
+            this._stagnantCount = 0;  // 重置停滞计数
+            this._lastTotalRows = 0;
             this.filterTopics();
         }
 
@@ -2264,6 +2288,8 @@
             Utils.set(CONFIG.KEYS.SIEVE_TAGS, this.tagStates);
             
             this.updateAllBtns();
+            this._stagnantCount = 0;  // 重置停滞计数
+            this._lastTotalRows = 0;
             this.filterTopics();
         }
 
@@ -2387,20 +2413,47 @@
                 return;
             }
 
-            const currentCount = this.filterTopics();
             const { LEVELS, CATEGORIES, TAGS, STATE, TARGET_COUNT } = SIEVE_CONFIG;
             
             const isAllLevels = this.activeLevels.length === LEVELS.length;
             const isAllCats = this.activeCats.length === CATEGORIES.length;
             const isAllTagsNeutral = TAGS.every(t => !this.tagStates[t]);
 
-            // 如果所有筛选都是全选状态，隐藏状态
+            // 如果所有筛选都是全选状态，隐藏状态（不需要筛选）
             if (isAllLevels && isAllCats && isAllTagsNeutral) {
                 this.updateStatus('');
+                this._stagnantCount = 0;
+                return;
+            }
+            
+            // 如果等级或分类为空选择，意味着没有任何内容可显示，直接停止
+            const isNoLevels = this.activeLevels.length === 0;
+            const isNoCats = this.activeCats.length === 0;
+            if (isNoLevels || isNoCats) {
+                this.filterTopics();  // 执行筛选（隐藏所有帖子）
+                this.updateStatus('无筛选条件', 'end');
+                this._stagnantCount = 0;
                 return;
             }
 
+            // 获取当前总帖子数（包括隐藏的），用于停滞检测
+            const totalRows = document.querySelectorAll('.topic-list-body tr.topic-list-item').length;
+            if (this._lastTotalRows === totalRows) {
+                this._stagnantCount = (this._stagnantCount || 0) + 1;
+            } else {
+                this._lastTotalRows = totalRows;
+                this._stagnantCount = 0;
+            }
+
+            const currentCount = this.filterTopics();
+
             if (currentCount < TARGET_COUNT) {
+                // 连续 3 次（约 4.5 秒）加载后帖子总数不变，认为已无更多内容
+                if (this._stagnantCount >= 3) {
+                    this.updateStatus(`暂无更多内容 (${currentCount} 条)`, 'end');
+                    return;
+                }
+                
                 if (this.isFooterReached()) {
                     this.updateStatus(`已到底部 (${currentCount} 条)`, 'end');
                     return;
@@ -2417,6 +2470,7 @@
                 }
             } else {
                 this.updateStatus(`筛选完毕 (${currentCount} 条)`, 'done');
+                this._stagnantCount = 0;
             }
         }
 
@@ -2452,10 +2506,18 @@
                     this.lastUrl = url;
                     setTimeout(() => this.onUrlChange(), 500);
                 }
-                // 如果面板被移除，重新创建
+                // 如果面板被移除，重新创建（添加防抖动，避免频繁重建）
                 if (!document.getElementById('lda-sieve-panel') && this.isHomePage()) {
-                    this.panel = null;
-                    this.createUI();
+                    if (!this._panelRecreateTimer) {
+                        this._panelRecreateTimer = setTimeout(() => {
+                            this._panelRecreateTimer = null;
+                            // 再次确认面板确实不存在
+                            if (!document.getElementById('lda-sieve-panel') && this.isHomePage() && !this.isDestroyed) {
+                                this.panel = null;
+                                this.createUI();
+                            }
+                        }, 500);
+                    }
                 }
             });
             
@@ -2504,7 +2566,7 @@
                 useClassicIcon: Utils.get(CONFIG.KEYS.USE_CLASSIC_ICON, false), // 使用经典地球图标，默认关闭
                 iconSize: Utils.get(CONFIG.KEYS.ICON_SIZE, 'sm'), // 小秘书图标尺寸，默认小
                 displayMode: Utils.get(CONFIG.KEYS.DISPLAY_MODE, 'float'), // 显示模式：float（悬浮球）/ header（顶栏按钮）
-                sieveEnabled: Utils.get(CONFIG.KEYS.SIEVE_ENABLED, true), // 主页筛选工具开关，默认开启
+                sieveEnabled: Utils.get(CONFIG.KEYS.SIEVE_ENABLED, false), // 主页筛选工具开关，默认关闭
                 fontSize: Utils.get(CONFIG.KEYS.FONT_SIZE, 100), // 字体大小百分比，默认100%
                 settingSubTab: Utils.get(CONFIG.KEYS.SETTING_SUB_TAB, 'func') // 设置页子标签：func / appearance
             };
@@ -2519,6 +2581,7 @@
             this.focusFlags = { trust: false, credit: false, cdk: false };
             this.autoRefreshTimer = null;
             this.userWatchTimer = null; // 账号切换/退出检测计时器
+            this._globalEventsBound = false; // 防止事件监听器重复绑定
             this.cdkBridgeInit = false;
             this.cdkBridgeFrame = null;
             this.cdkWaiters = [];
@@ -2533,8 +2596,11 @@
             this.refreshingPages = { trust: false, credit: false, cdk: false };
             this.refreshStartTime = { trust: 0, credit: 0, cdk: 0 };
             this.refreshStopPending = { trust: false, credit: false, cdk: false }; // 是否正在等待延迟停止
+            this.lastRefreshAttempt = { trust: 0, credit: 0, cdk: 0 }; // 上次请求尝试时间（用于全局冷却）
             this.dom = {};
             this.sieveModule = null; // 筛选工具模块实例
+            this._tickDebounceTimer = null; // tick 防抖计时器
+            this._lastFocusRefresh = 0; // 上次 focus 刷新时间
 
             // 存储/缓存格式校验（避免旧版本残留导致错误状态）
             this.ensureStorageSchema();
@@ -3137,12 +3203,29 @@
             Utils.el('#lda-btn-close').onclick = () => this.togglePanel(false);
             Utils.el('#lda-btn-update').onclick = (e) => { e.stopPropagation(); this.checkUpdate({ isAuto: false, force: true }); };
 
-            // 点击页面其他地方收起面板
-            document.addEventListener('click', (e) => {
-                if (!this.dom.root.contains(e.target) && this.dom.panel.style.display === 'flex') {
-                    this.togglePanel(false);
-                }
-            });
+            // 防止 window/document 级事件监听器重复绑定（init 可能被多次调用）
+            if (!this._globalEventsBound) {
+                this._globalEventsBound = true;
+
+                // 点击页面其他地方收起面板
+                document.addEventListener('click', (e) => {
+                    // 检查 dom.root 是否仍在文档中
+                    if (this.dom.root && document.contains(this.dom.root) &&
+                        !this.dom.root.contains(e.target) && this.dom.panel?.style.display === 'flex') {
+                        this.togglePanel(false);
+                    }
+                });
+
+                // 窗口获得焦点时自动刷新（用户授权后回来）
+                window.addEventListener('focus', () => this.refreshOnFocusIfNeeded());
+
+                window.addEventListener('resize', () => {
+                    // 顶栏模式不需要更新面板方向
+                    if (this.state.displayMode !== 'header') {
+                        this.updatePanelSide();
+                    }
+                });
+            }
 
             this.dom.tabs.forEach(t => t.onclick = () => {
                 this.dom.tabs.forEach(x => x.classList.remove('active'));
@@ -3258,15 +3341,7 @@
                 if (wasOpen) this.togglePanel(true);
             };
 
-            // 窗口获得焦点时自动刷新（用户授权后回来）
-            window.addEventListener('focus', () => this.refreshOnFocusIfNeeded());
-
-            window.addEventListener('resize', () => {
-                // 顶栏模式不需要更新面板方向
-                if (this.state.displayMode !== 'header') {
-                    this.updatePanelSide();
-                }
-            });
+            // 注意：window/document 级别的事件监听器已在上方 _globalEventsBound 检查块中绑定，避免重复
 
             this.initDrag();
         }
@@ -3398,7 +3473,7 @@
         ensureStorageSchema() {
             const ver = Utils.get(CONFIG.KEYS.CACHE_SCHEMA, 0);
             if (ver !== CONFIG.CACHE_SCHEMA_VERSION) {
-                // 缓存结构变更/旧版本残留：仅清空“数据缓存”，保留用户设置（主题、位置等）
+                // 缓存结构变更/旧版本残留：仅清空"数据缓存"，保留用户设置（主题、位置等）
                 this.trustData = null;
                 this.creditData = null;
                 this.cdkCache = null;
@@ -3409,6 +3484,9 @@
                 Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
                 Utils.set(CONFIG.KEYS.CACHE_CDK, null);
                 Utils.set(CONFIG.KEYS.CACHE_META, this.lastFetch);
+                // 重置筛选工具为默认关闭状态
+                this.state.sieveEnabled = false;
+                Utils.set(CONFIG.KEYS.SIEVE_ENABLED, false);
                 Utils.set(CONFIG.KEYS.CACHE_SCHEMA, CONFIG.CACHE_SCHEMA_VERSION);
             }
         }
@@ -3555,7 +3633,7 @@
             if (this.userWatchTimer) return;
             if (location.host !== 'linux.do') return;
 
-            const tick = () => {
+            const tickCore = () => {
                 const username = Utils.getCurrentUsernameFromDOM() || Utils.getCurrentUsername();
                 const loginState = Utils.getLoginStateByDOM();
 
@@ -3576,8 +3654,17 @@
                 }
             };
 
-            // 启动时执行一次
-            tick();
+            // 防抖包装：500ms 内多次调用只执行一次
+            const tick = () => {
+                if (this._tickDebounceTimer) clearTimeout(this._tickDebounceTimer);
+                this._tickDebounceTimer = setTimeout(() => {
+                    this._tickDebounceTimer = null;
+                    tickCore();
+                }, 500);
+            };
+
+            // 启动时执行一次（立即执行，不防抖）
+            tickCore();
 
             // 事件驱动：窗口获得焦点时检查
             window.addEventListener('focus', tick);
@@ -3595,7 +3682,7 @@
             });
 
             // 保底轮询：60秒一次，防止极端情况漏检
-            this.userWatchTimer = setInterval(tick, 60000);
+            this.userWatchTimer = setInterval(tickCore, 60000);
         }
 
         isExpired(type) {
@@ -3657,7 +3744,8 @@
             leftText = null,
             onRetry = null
         }) {
-            this.focusFlags[page] = true;
+            // 注意：不在这里自动设置 focusFlags，避免 focus 事件导致循环刷新
+            // focusFlags 只在用户点击跳转链接时设置
 
             const lvlHtml = levelText !== null && levelText !== undefined
                 ? `<div style="display:flex;justify-content:center;gap:8px;align-items:center;margin-bottom:10px;">
@@ -3965,7 +4053,7 @@
 
             const level = knownLevel !== null ? String(knownLevel) : levelNode.textContent.replace(/\D/g, '');
             const rows = Array.from(levelNode.parentElement.parentElement.querySelectorAll('tr')).slice(1);
-            if (rows.length === 0) this.focusFlags.trust = true;
+            // 注意：即使 rows.length === 0 也不设置 focusFlags，避免循环刷新
 
             const items = [];
             const newCache = {};
@@ -4036,6 +4124,19 @@
             const base = { background: false, force: undefined, manual: false };
             const opts = typeof arg === 'object' ? { ...base, ...arg } : { ...base, manual: !!arg, force: arg === false ? false : undefined };
             const manual = opts.manual;
+
+            // 防止并发重复请求（手动刷新除外）
+            if (this.refreshingPages.trust && !manual) {
+                return;
+            }
+
+            // 全局冷却：距离上次请求至少 5 秒（手动刷新除外）
+            const now = Date.now();
+            if (!manual && now - this.lastRefreshAttempt.trust < 5000) {
+                return;
+            }
+            this.lastRefreshAttempt.trust = now;
+
             const forceFetch = opts.force ?? !opts.background;
             const wrap = this.dom.trust;
             const endWait = this.beginWait('trust');
@@ -4078,11 +4179,11 @@
                     }
                 }
 
-                // ✅ 未能拿到用户名：更谨慎的登录判断（session 不可用时，使用 DOM 是否存在“登录/注册”入口作为辅助）
+                // ✅ 未能拿到用户名：更谨慎的登录判断（session 不可用时，使用 DOM 是否存在"登录/注册"入口作为辅助）
                 if (!username) {
                     const domState = Utils.getLoginStateByDOM();
                     if (domState === false) {
-                        this.focusFlags.trust = true;
+                        // 不自动设置 focusFlags，避免循环刷新
                         wrap.innerHTML = `
           <div class="lda-card lda-auth-card">
             <div class="lda-auth-top">
@@ -4118,7 +4219,7 @@
                     }
 
                     // DOM 无法确认：仍给出"刷新/前往登录"的入口
-                    this.focusFlags.trust = true;
+                    // 不自动设置 focusFlags，避免循环刷新
                     wrap.innerHTML = `
           <div class="lda-card lda-auth-card">
             <div class="lda-auth-top">
@@ -4462,6 +4563,19 @@
             const base = { background: false, force: undefined, manual: false, autoRetry: true };
             const opts = typeof arg === 'object' ? { ...base, ...arg } : { ...base, manual: !!arg, force: arg === false ? false : undefined };
             const manual = opts.manual;
+
+            // 防止并发重复请求（手动刷新除外）
+            if (this.refreshingPages.credit && !manual) {
+                return;
+            }
+
+            // 全局冷却：距离上次请求至少 5 秒（手动刷新除外）
+            const now = Date.now();
+            if (!manual && now - this.lastRefreshAttempt.credit < 5000) {
+                return;
+            }
+            this.lastRefreshAttempt.credit = now;
+
             const forceFetch = opts.force ?? !opts.background;
             const wrap = this.dom.credit;
             const endWait = this.beginWait('credit');
@@ -4542,7 +4656,7 @@
 
                     // 如果用户已登录主站且有缓存，显示缓存数据并提示需要重新授权
                     if (isUserLoggedIn === true && hasUsableCache) {
-                        this.focusFlags.credit = true;
+                        // 不自动设置 focusFlags，避免循环刷新
                         this.showToast(this.t('credit_keep_cache_tip'), 'warning', 3000);
                         try { this.renderCredit(this.creditData); } catch (_) { /* ignore */ }
                         this.stopRefreshWithMinDuration('credit');
@@ -4561,7 +4675,7 @@
                     }
 
                     this.stopRefreshWithMinDuration('credit');
-                    this.focusFlags.credit = true;
+                    // 不自动设置 focusFlags，避免循环刷新
                     wrap.innerHTML = `
                         <div class="lda-card lda-auth-card">
                             <div class="lda-auth-icon">
@@ -4582,6 +4696,7 @@
                         this.refreshCredit({ manual: true, force: true });
                     };
                     const go = Utils.el('#btn-go-credit', wrap);
+                    // 用户点击跳转链接时才设置 focusFlags
                     if (go) go.onclick = () => { this.focusFlags.credit = true; };
                     if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
                     endWait();
@@ -4682,6 +4797,19 @@
             const base = { background: false, force: undefined, manual: false };
             const opts = typeof arg === 'object' ? { ...base, ...arg } : { ...base, manual: !!arg, force: arg === false ? false : undefined };
             const manual = opts.manual;
+
+            // 防止并发重复请求（手动刷新除外）
+            if (this.refreshingPages.cdk && !manual) {
+                return;
+            }
+
+            // 全局冷却：距离上次请求至少 5 秒（手动刷新除外）
+            const now = Date.now();
+            if (!manual && now - this.lastRefreshAttempt.cdk < 5000) {
+                return;
+            }
+            this.lastRefreshAttempt.cdk = now;
+
             const wrap = this.dom.cdk;
             const endWait = this.beginWait('cdk');
 
@@ -4918,7 +5046,7 @@
         }
 
         renderCDKAuth() {
-            this.focusFlags.cdk = true;
+            // 不自动设置 focusFlags，避免循环刷新
             const wrap = this.dom.cdk;
             wrap.innerHTML = `
                 <div class="lda-card lda-auth-card">
