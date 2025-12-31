@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      5.6.0
-// @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
+// @version      5.7.0
+// @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 主页筛选工具 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
 // @match        https://cdk.linux.do/*
@@ -23,10 +23,12 @@
 // ==/UserScript==
 
 /**
- * 更新日志 v5.6.0
- * - 优化：设置页"支持作者"改为"支持小秘书"，文案改为随机语录
+ * 更新日志 v5.7.0
+ * - 新增：主页筛选工具 - 按等级/分类/标签筛选帖子，支持预设保存和拖拽排序
+ * - 新增：设置页"主页筛选工具"开关（仅在首页生效）
  *
  * 历史更新：
+ * v5.6.0 - 优化：设置页"支持作者"改为"支持小秘书"，文案改为随机语录
  * v5.5.0 - 修复 Firefox 数据获取 + 顶栏按钮模式 + 注册天数显示
  * v5.4.0 - 修复悬浮球展开面板后位置偏移问题
  * v5.3.0 - 修复 Firefox + Tampermonkey 跨域 cookie 问题（withCredentials）
@@ -95,7 +97,14 @@
             USE_CLASSIC_ICON: 'lda_v5_use_classic_icon',
             ICON_CACHE: 'lda_v5_icon_cache',
             ICON_SIZE: 'lda_v5_icon_size',
-            DISPLAY_MODE: 'lda_v5_display_mode'
+            DISPLAY_MODE: 'lda_v5_display_mode',
+            // 筛选工具相关
+            SIEVE_ENABLED: 'lda_v5_sieve_enabled',
+            SIEVE_LEVELS: 'lda_v5_sieve_levels',
+            SIEVE_CATS: 'lda_v5_sieve_cats',
+            SIEVE_TAGS: 'lda_v5_sieve_tags',
+            SIEVE_PRESETS: 'lda_v5_sieve_presets',
+            SIEVE_PRESET_ORDER: 'lda_v5_sieve_preset_order'
         }
     };
 
@@ -235,7 +244,26 @@
             // extra hints
             connect_open: "打开 Connect",
             credit_open: "打开 Credit",
-            cdk_open: "打开 CDK"
+            cdk_open: "打开 CDK",
+            // 筛选工具
+            set_sieve: "主页筛选工具",
+            sieve_level: "等级",
+            sieve_category: "分类",
+            sieve_tag: "标签",
+            sieve_preset: "预设",
+            sieve_all: "全选",
+            sieve_reset: "重置",
+            sieve_save_preset: "保存",
+            sieve_preset_name: "预设名称",
+            sieve_preset_placeholder: "输入预设名称",
+            sieve_preset_save_success: "预设已保存",
+            sieve_preset_delete_confirm: "确定删除预设？",
+            sieve_status_loading: "加载中...",
+            sieve_status_filtering: "筛选中...",
+            sieve_status_done: "筛选完毕",
+            sieve_status_end: "已到底部",
+            sieve_no_preset: "暂无预设",
+            sieve_tip: "仅在首页生效"
         },
         en: {
             title: "Linux.do HUD",
@@ -355,7 +383,26 @@
             trust_data_source: "Data source",
             connect_open: "Open Connect",
             credit_open: "Open Credit",
-            cdk_open: "Open CDK"
+            cdk_open: "Open CDK",
+            // Sieve Tool
+            set_sieve: "Homepage Sieve",
+            sieve_level: "Level",
+            sieve_category: "Category",
+            sieve_tag: "Tag",
+            sieve_preset: "Preset",
+            sieve_all: "All",
+            sieve_reset: "Reset",
+            sieve_save_preset: "Save",
+            sieve_preset_name: "Preset Name",
+            sieve_preset_placeholder: "Enter preset name",
+            sieve_preset_save_success: "Preset saved",
+            sieve_preset_delete_confirm: "Delete this preset?",
+            sieve_status_loading: "Loading...",
+            sieve_status_filtering: "Filtering...",
+            sieve_status_done: "Done",
+            sieve_status_end: "End of list",
+            sieve_no_preset: "No presets",
+            sieve_tip: "Homepage only"
         }
     };
 
@@ -1312,6 +1359,1049 @@
 
     `;
 
+    // ========== 筛选工具模块 (SieveModule) ==========
+    // 配置定义
+    const SIEVE_CONFIG = {
+        // 允许自动滚动的路径白名单
+        AUTO_SCROLL_PATHS: ['/', '/latest', '/top', '/new'],
+        TARGET_COUNT: 20,
+        // 等级配置
+        LEVELS: [
+            { key: 'public', label: '公开(Lv0)', check: (cls) => !/lv\d+/i.test(cls) },
+            { key: 'lv1', label: 'Lv1', check: (cls) => /lv1/i.test(cls) },
+            { key: 'lv2', label: 'Lv2', check: (cls) => /lv2/i.test(cls) },
+            { key: 'lv3', label: 'Lv3', check: (cls) => /lv3/i.test(cls) },
+        ],
+        // 分类配置
+        CATEGORIES: [
+            { id: '4', name: '开发调优' },
+            { id: '98', name: '国产替代' },
+            { id: '14', name: '资源荟萃' },
+            { id: '42', name: '文档共建' },
+            { id: '10', name: '跳蚤市场' },
+            { id: '106', name: '积分乐园' },
+            { id: '27', name: '非我莫属' },
+            { id: '32', name: '读书成诗' },
+            { id: '46', name: '扬帆起航' },
+            { id: '34', name: '前沿快讯' },
+            { id: '92', name: '网络记忆' },
+            { id: '36', name: '福利羊毛' },
+            { id: '11', name: '搞七捻三' },
+            { id: '102', name: '社区孵化' },
+            { id: '2', name: '运营反馈' },
+            { id: '45', name: '深海幽域' }
+        ],
+        // 标签配置
+        TAGS: [
+            "无标签", "纯水", "快问快答", "人工智能", "软件开发",
+            "夸克网盘", "病友", "ChatGPT", "树洞", "AFF",
+            "OpenAI", "影视", "百度网盘", "VPS", "职场",
+            "网络安全", "订阅节点", "抽奖", "Cursor", "游戏",
+            "动漫", "作品集", "晒年味", "Gemini", "PT",
+            "拼车", "求资源", "配置优化", "Claude", "NSFW",
+            "圆圆满满"
+        ],
+        // 三态常量
+        STATE: { NEUTRAL: 0, INCLUDE: 1, EXCLUDE: 2 }
+    };
+
+    // 筛选工具样式
+    const SieveStyles = `
+        /* 筛选面板容器 */
+        #lda-sieve-panel {
+            margin-bottom: 15px;
+            padding: 12px 14px;
+            background: var(--secondary, #fff);
+            border: 1px solid var(--primary-low, #e0e0e0);
+            border-radius: 10px;
+            font-size: 13px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        }
+        .lda-dark #lda-sieve-panel {
+            background: rgba(30, 30, 35, 0.95);
+            border-color: rgba(255,255,255,0.08);
+        }
+
+        /* 筛选行 */
+        .lda-sieve-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 0;
+            border-bottom: 1px dashed var(--primary-low, #e0e0e0);
+        }
+        .lda-sieve-row:last-child {
+            border-bottom: none;
+            padding-bottom: 0;
+        }
+        .lda-sieve-row:first-child {
+            padding-top: 0;
+        }
+
+        /* 行标题 */
+        .lda-sieve-title {
+            font-weight: 600;
+            font-size: 12px;
+            color: var(--primary, #333);
+            min-width: 36px;
+            user-select: none;
+        }
+
+        /* 快捷操作按钮 */
+        .lda-sieve-action {
+            padding: 3px 8px;
+            font-size: 11px;
+            border: 1px solid var(--primary-low, #ddd);
+            border-radius: 4px;
+            background: transparent;
+            color: var(--primary-medium, #666);
+            cursor: pointer;
+            transition: all 0.15s;
+            user-select: none;
+        }
+        .lda-sieve-action:hover {
+            border-color: var(--tertiary, #3b82f6);
+            color: var(--tertiary, #3b82f6);
+        }
+
+        /* 筛选标签按钮（通用） */
+        .lda-sieve-btn {
+            padding: 4px 10px;
+            font-size: 12px;
+            border: 1px solid var(--primary-low, #ddd);
+            border-radius: 5px;
+            background: transparent;
+            color: var(--primary, #333);
+            cursor: pointer;
+            transition: all 0.15s;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-touch-callout: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            white-space: nowrap;
+        }
+        .lda-sieve-btn:hover {
+            border-color: var(--tertiary, #3b82f6);
+        }
+        .lda-sieve-btn.active {
+            color: #22c55e;
+            border-color: #22c55e;
+            font-weight: 600;
+        }
+        .lda-sieve-btn.exclude {
+            color: #ef4444;
+            border-color: #ef4444;
+            font-weight: 600;
+        }
+        .lda-sieve-btn svg {
+            width: 10px;
+            height: 10px;
+            fill: currentColor;
+        }
+
+        /* 预设区域 */
+        .lda-sieve-preset-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            padding-top: 8px;
+            min-height: 36px;
+        }
+
+        /* 预设按钮组 */
+        .lda-sieve-preset-group {
+            display: inline-flex;
+            align-items: stretch;
+            border-radius: 5px;
+            overflow: hidden;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-touch-callout: none;
+            touch-action: none;
+        }
+        .lda-sieve-preset-group.dragging {
+            opacity: 0.5;
+            transform: scale(1.02);
+        }
+        .lda-sieve-preset-group.drag-over {
+            box-shadow: 0 0 0 2px var(--tertiary, #3b82f6);
+        }
+
+        /* 预设名称按钮 */
+        .lda-sieve-preset-name {
+            padding: 4px 10px;
+            font-size: 12px;
+            line-height: 1.4;
+            border: 1px solid var(--primary-low, #ddd);
+            border-radius: 5px 0 0 5px;
+            background: transparent;
+            color: var(--primary, #333);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .lda-sieve-preset-name:hover {
+            border-color: var(--tertiary, #3b82f6);
+            color: var(--tertiary, #3b82f6);
+        }
+
+        /* 预设删除按钮 */
+        .lda-sieve-preset-del {
+            padding: 4px 6px;
+            font-size: 12px;
+            line-height: 1.4;
+            border: 1px solid var(--primary-low, #ddd);
+            border-left: none;
+            border-radius: 0 5px 5px 0;
+            background: transparent;
+            color: #999;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .lda-sieve-preset-del:hover {
+            border-color: #ef4444;
+            color: #ef4444;
+            background: rgba(239, 68, 68, 0.08);
+        }
+
+        /* 拖拽把手（移动端显示） */
+        .lda-sieve-preset-handle {
+            display: none;
+            padding: 4px 4px;
+            font-size: 12px;
+            line-height: 1.4;
+            border: 1px solid var(--primary-low, #ddd);
+            border-right: none;
+            border-radius: 5px 0 0 5px;
+            background: transparent;
+            color: #999;
+            cursor: grab;
+            touch-action: none;
+        }
+        @media (pointer: coarse) {
+            .lda-sieve-preset-handle {
+                display: flex;
+                align-items: center;
+            }
+            .lda-sieve-preset-name {
+                border-radius: 0;
+            }
+        }
+
+        /* 保存预设输入框 */
+        .lda-sieve-save-wrap {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .lda-sieve-save-input {
+            width: 72px;
+            padding: 4px 8px;
+            font-size: 12px;
+            line-height: 1.4;
+            border: 1px solid var(--primary-low, #ddd);
+            border-radius: 5px;
+            background: var(--secondary, #fff);
+            color: var(--primary, #333);
+            outline: none;
+            box-sizing: border-box;
+        }
+        .lda-sieve-save-input:focus {
+            border-color: var(--tertiary, #3b82f6);
+        }
+        .lda-sieve-save-btn {
+            padding: 4px 10px;
+            font-size: 12px;
+            line-height: 1.4;
+            border: 1px solid var(--tertiary, #3b82f6);
+            border-radius: 5px;
+            background: var(--tertiary, #3b82f6);
+            color: #fff;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+            box-sizing: border-box;
+        }
+        .lda-sieve-save-btn:hover {
+            opacity: 0.9;
+        }
+
+        /* 状态栏 */
+        .lda-sieve-status {
+            position: absolute;
+            top: 12px;
+            right: 14px;
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--primary-medium, #666);
+            opacity: 0;
+            transition: opacity 0.2s;
+            pointer-events: none;
+            white-space: nowrap;
+        }
+        .lda-sieve-status.visible {
+            opacity: 1;
+        }
+        .lda-sieve-status.loading { color: #f59e0b; }
+        .lda-sieve-status.done { color: #22c55e; }
+        .lda-sieve-status.end { color: #ef4444; }
+
+        /* 无预设提示 */
+        .lda-sieve-no-preset {
+            font-size: 11px;
+            color: var(--primary-medium, #999);
+            font-style: italic;
+        }
+
+        /* 筛选面板位置 */
+        #lda-sieve-panel {
+            position: relative;
+        }
+    `;
+
+    // 筛选工具模块类
+    class SieveModule {
+        constructor(app) {
+            this.app = app;
+            this.panel = null;
+            this.statusEl = null;
+            this.checkInterval = null;
+            this.observer = null;
+            this.lastUrl = location.href;
+            this.isDestroyed = false;
+            
+            // 筛选状态
+            this.activeLevels = Utils.get(CONFIG.KEYS.SIEVE_LEVELS, SIEVE_CONFIG.LEVELS.map(l => l.key));
+            this.activeCats = Utils.get(CONFIG.KEYS.SIEVE_CATS, SIEVE_CONFIG.CATEGORIES.map(c => c.id));
+            this.tagStates = Utils.get(CONFIG.KEYS.SIEVE_TAGS, {});
+            this.presets = Utils.get(CONFIG.KEYS.SIEVE_PRESETS, {});
+            this.presetOrder = Utils.get(CONFIG.KEYS.SIEVE_PRESET_ORDER, Object.keys(this.presets));
+            
+            // 拖拽状态
+            this.dragItem = null;
+            this.dragStartY = 0;
+        }
+
+        // 初始化
+        init() {
+            if (this.isDestroyed) return;
+            
+            // 只在首页相关路径工作
+            if (!this.isHomePage()) return;
+            
+            // 注入样式
+            if (!document.getElementById('lda-sieve-styles')) {
+                const style = document.createElement('style');
+                style.id = 'lda-sieve-styles';
+                style.textContent = SieveStyles;
+                document.head.appendChild(style);
+            }
+            
+            // 创建 UI
+            this.createUI();
+            
+            // 启动筛选循环
+            this.startFilterLoop();
+            
+            // 监听 URL 变化
+            this.setupUrlWatcher();
+        }
+
+        // 销毁
+        destroy() {
+            this.isDestroyed = true;
+            
+            if (this.checkInterval) {
+                clearInterval(this.checkInterval);
+                this.checkInterval = null;
+            }
+            
+            if (this.observer) {
+                this.observer.disconnect();
+                this.observer = null;
+            }
+            
+            if (this.panel) {
+                this.panel.remove();
+                this.panel = null;
+            }
+            
+            // 恢复所有隐藏的帖子
+            const rows = document.querySelectorAll('.topic-list-body tr.topic-list-item');
+            rows.forEach(row => row.style.display = '');
+        }
+
+        // 判断是否在首页
+        isHomePage() {
+            return SIEVE_CONFIG.AUTO_SCROLL_PATHS.includes(window.location.pathname);
+        }
+
+        // 创建 UI
+        createUI() {
+            if (this.panel || document.getElementById('lda-sieve-panel')) return;
+            
+            const target = document.querySelector('.list-controls') || document.querySelector('.topic-list');
+            if (!target) return;
+
+            this.panel = document.createElement('div');
+            this.panel.id = 'lda-sieve-panel';
+            this.panel.innerHTML = this.renderPanelHTML();
+            
+            target.parentNode.insertBefore(this.panel, target);
+            
+            this.statusEl = this.panel.querySelector('.lda-sieve-status');
+            
+            // 绑定事件
+            this.bindEvents();
+        }
+
+        // 渲染面板 HTML
+        renderPanelHTML() {
+            const { LEVELS, CATEGORIES, TAGS, STATE } = SIEVE_CONFIG;
+            const checkSvg = `<svg viewBox="0 0 448 512"><path d="M438.6 105.4c12.5 12.5 12.5 32.8 0 45.3l-256 256c-12.5 12.5-32.8 12.5-45.3 0l-128-128c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0L160 338.7 393.4 105.4c12.5-12.5 32.8-12.5 45.3 0z"/></svg>`;
+            const banSvg = `<svg viewBox="0 0 512 512"><path d="M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM175 175c9.4-9.4 24.6-9.4 33.9 0l47 47 47-47c9.4-9.4 24.6-9.4 33.9 0s9.4 24.6 0 33.9l-47 47 47 47c9.4 9.4 9.4 24.6 0 33.9s-24.6 9.4-33.9 0l-47-47-47 47c-9.4 9.4-24.6 9.4-33.9 0s-9.4-24.6 0-33.9l47-47-47-47c-9.4-9.4-9.4-24.6 0-33.9z"/></svg>`;
+            const dragSvg = `<svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>`;
+
+            // 等级按钮
+            const levelBtns = LEVELS.map(l => {
+                const isActive = this.activeLevels.includes(l.key);
+                return `<span class="lda-sieve-btn${isActive ? ' active' : ''}" data-type="level" data-key="${l.key}">${isActive ? checkSvg : ''}${l.label}</span>`;
+            }).join('');
+
+            // 分类按钮
+            const catBtns = CATEGORIES.map(c => {
+                const isActive = this.activeCats.includes(c.id);
+                return `<span class="lda-sieve-btn${isActive ? ' active' : ''}" data-type="cat" data-key="${c.id}">${isActive ? checkSvg : ''}${c.name}</span>`;
+            }).join('');
+
+            // 标签按钮
+            const tagBtns = TAGS.map(t => {
+                const state = this.tagStates[t] || STATE.NEUTRAL;
+                let cls = '';
+                let icon = '';
+                if (state === STATE.INCLUDE) { cls = ' active'; icon = checkSvg; }
+                else if (state === STATE.EXCLUDE) { cls = ' exclude'; icon = banSvg; }
+                return `<span class="lda-sieve-btn${cls}" data-type="tag" data-key="${t}">${icon}${t}</span>`;
+            }).join('');
+
+            // 预设按钮
+            const presetBtns = this.renderPresetBtns(dragSvg);
+
+            return `
+                <div class="lda-sieve-status"></div>
+                <div class="lda-sieve-row">
+                    <span class="lda-sieve-title">等级</span>
+                    <span class="lda-sieve-action" data-action="toggle-level">全选</span>
+                    ${levelBtns}
+                </div>
+                <div class="lda-sieve-row">
+                    <span class="lda-sieve-title">分类</span>
+                    <span class="lda-sieve-action" data-action="toggle-cat">全选</span>
+                    ${catBtns}
+                </div>
+                <div class="lda-sieve-row">
+                    <span class="lda-sieve-title">标签</span>
+                    <span class="lda-sieve-action" data-action="reset-tag">重置</span>
+                    ${tagBtns}
+                </div>
+                <div class="lda-sieve-row lda-sieve-preset-row" id="lda-sieve-preset-container">
+                    <span class="lda-sieve-title">预设</span>
+                    ${presetBtns}
+                    <span class="lda-sieve-save-wrap">
+                        <input type="text" class="lda-sieve-save-input" placeholder="名称" maxlength="10">
+                        <span class="lda-sieve-save-btn">保存</span>
+                    </span>
+                </div>
+            `;
+        }
+
+        // 渲染预设按钮
+        renderPresetBtns(dragSvg) {
+            const names = this.presetOrder.filter(n => this.presets[n]);
+            if (names.length === 0) {
+                return `<span class="lda-sieve-no-preset">暂无预设，输入名称后点击保存</span>`;
+            }
+            return names.map(name => `
+                <span class="lda-sieve-preset-group" data-preset="${name}">
+                    <span class="lda-sieve-preset-handle">${dragSvg}</span>
+                    <span class="lda-sieve-preset-name">${name}</span>
+                    <span class="lda-sieve-preset-del">×</span>
+                </span>
+            `).join('');
+        }
+
+        // 刷新预设区域
+        refreshPresets() {
+            const container = this.panel?.querySelector('#lda-sieve-preset-container');
+            if (!container) return;
+            
+            const dragSvg = `<svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>`;
+            
+            // 保留标题和保存框
+            const title = container.querySelector('.lda-sieve-title');
+            const saveWrap = container.querySelector('.lda-sieve-save-wrap');
+            
+            // 移除旧的预设按钮
+            container.querySelectorAll('.lda-sieve-preset-group, .lda-sieve-no-preset').forEach(el => el.remove());
+            
+            // 插入新的预设按钮
+            const presetHtml = this.renderPresetBtns(dragSvg);
+            title.insertAdjacentHTML('afterend', presetHtml);
+            
+            // 重新绑定拖拽事件
+            this.bindPresetDragEvents();
+        }
+
+        // 绑定事件
+        bindEvents() {
+            if (!this.panel) return;
+
+            // 事件委托
+            this.panel.addEventListener('click', (e) => {
+                const target = e.target.closest('[data-action], [data-type], .lda-sieve-preset-name, .lda-sieve-preset-del, .lda-sieve-save-btn');
+                if (!target) return;
+
+                // 快捷操作
+                if (target.dataset.action) {
+                    this.handleAction(target.dataset.action);
+                    return;
+                }
+
+                // 筛选按钮
+                if (target.dataset.type) {
+                    this.handleFilterBtn(target);
+                    return;
+                }
+
+                // 预设名称 - 加载预设
+                if (target.classList.contains('lda-sieve-preset-name')) {
+                    const name = target.closest('.lda-sieve-preset-group')?.dataset.preset;
+                    if (name) this.loadPreset(name);
+                    return;
+                }
+
+                // 预设删除
+                if (target.classList.contains('lda-sieve-preset-del')) {
+                    const name = target.closest('.lda-sieve-preset-group')?.dataset.preset;
+                    if (name && confirm(`确定删除预设 "${name}"？`)) {
+                        this.deletePreset(name);
+                    }
+                    return;
+                }
+
+                // 保存预设
+                if (target.classList.contains('lda-sieve-save-btn')) {
+                    const input = this.panel.querySelector('.lda-sieve-save-input');
+                    const name = input?.value.trim();
+                    if (name) {
+                        this.savePreset(name);
+                        input.value = '';
+                    }
+                    return;
+                }
+            });
+
+            // 回车保存预设
+            const input = this.panel.querySelector('.lda-sieve-save-input');
+            if (input) {
+                input.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        const name = input.value.trim();
+                        if (name) {
+                            this.savePreset(name);
+                            input.value = '';
+                        }
+                    }
+                });
+            }
+
+            // 绑定预设拖拽事件
+            this.bindPresetDragEvents();
+        }
+
+        // 绑定预设拖拽事件（PC + 移动端）
+        bindPresetDragEvents() {
+            const container = this.panel?.querySelector('#lda-sieve-preset-container');
+            if (!container) return;
+
+            const groups = container.querySelectorAll('.lda-sieve-preset-group');
+            
+            groups.forEach(group => {
+                // PC 拖拽
+                group.setAttribute('draggable', 'true');
+                
+                group.addEventListener('dragstart', (e) => {
+                    this.dragItem = group;
+                    group.classList.add('dragging');
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', group.dataset.preset);
+                });
+
+                group.addEventListener('dragend', () => {
+                    this.dragItem = null;
+                    group.classList.remove('dragging');
+                    groups.forEach(g => g.classList.remove('drag-over'));
+                    this.savePresetOrder();
+                });
+
+                group.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    if (this.dragItem && this.dragItem !== group) {
+                        group.classList.add('drag-over');
+                    }
+                });
+
+                group.addEventListener('dragleave', () => {
+                    group.classList.remove('drag-over');
+                });
+
+                group.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    group.classList.remove('drag-over');
+                    if (this.dragItem && this.dragItem !== group) {
+                        this.reorderPresets(this.dragItem.dataset.preset, group.dataset.preset);
+                    }
+                });
+
+                // 移动端拖拽 - 通过拖拽把手触发
+                const handle = group.querySelector('.lda-sieve-preset-handle');
+                if (handle) {
+                    handle.addEventListener('touchstart', (e) => {
+                        e.preventDefault();
+                        this.dragItem = group;
+                        this.dragStartY = e.touches[0].clientY;
+                        group.classList.add('dragging');
+                    }, { passive: false });
+                }
+            });
+
+            // 移动端触摸移动和结束
+            container.addEventListener('touchmove', (e) => {
+                if (!this.dragItem) return;
+                e.preventDefault();
+                
+                const touch = e.touches[0];
+                const elementUnder = document.elementFromPoint(touch.clientX, touch.clientY);
+                const targetGroup = elementUnder?.closest('.lda-sieve-preset-group');
+                
+                groups.forEach(g => g.classList.remove('drag-over'));
+                if (targetGroup && targetGroup !== this.dragItem) {
+                    targetGroup.classList.add('drag-over');
+                }
+            }, { passive: false });
+
+            container.addEventListener('touchend', () => {
+                if (!this.dragItem) return;
+                
+                const dragOverGroup = container.querySelector('.lda-sieve-preset-group.drag-over');
+                if (dragOverGroup) {
+                    this.reorderPresets(this.dragItem.dataset.preset, dragOverGroup.dataset.preset);
+                }
+                
+                groups.forEach(g => {
+                    g.classList.remove('dragging');
+                    g.classList.remove('drag-over');
+                });
+                this.dragItem = null;
+                this.savePresetOrder();
+            });
+        }
+
+        // 重新排序预设
+        reorderPresets(fromName, toName) {
+            const fromIdx = this.presetOrder.indexOf(fromName);
+            const toIdx = this.presetOrder.indexOf(toName);
+            if (fromIdx === -1 || toIdx === -1) return;
+            
+            // 移动元素
+            this.presetOrder.splice(fromIdx, 1);
+            this.presetOrder.splice(toIdx, 0, fromName);
+            
+            // 刷新 UI
+            this.refreshPresets();
+        }
+
+        // 保存预设顺序
+        savePresetOrder() {
+            Utils.set(CONFIG.KEYS.SIEVE_PRESET_ORDER, this.presetOrder);
+        }
+
+        // 处理快捷操作
+        handleAction(action) {
+            const { LEVELS, CATEGORIES, TAGS } = SIEVE_CONFIG;
+            
+            if (action === 'toggle-level') {
+                const allKeys = LEVELS.map(l => l.key);
+                if (this.activeLevels.length === allKeys.length) {
+                    this.activeLevels = [];
+                } else {
+                    this.activeLevels = [...allKeys];
+                }
+                Utils.set(CONFIG.KEYS.SIEVE_LEVELS, this.activeLevels);
+            } else if (action === 'toggle-cat') {
+                const allIds = CATEGORIES.map(c => c.id);
+                if (this.activeCats.length === allIds.length) {
+                    this.activeCats = [];
+                } else {
+                    this.activeCats = [...allIds];
+                }
+                Utils.set(CONFIG.KEYS.SIEVE_CATS, this.activeCats);
+            } else if (action === 'reset-tag') {
+                this.tagStates = {};
+                Utils.set(CONFIG.KEYS.SIEVE_TAGS, this.tagStates);
+            }
+            
+            this.updateAllBtns();
+            this.filterTopics();
+        }
+
+        // 处理筛选按钮点击
+        handleFilterBtn(btn) {
+            const { type, key } = btn.dataset;
+            const { STATE } = SIEVE_CONFIG;
+            const checkSvg = `<svg viewBox="0 0 448 512"><path d="M438.6 105.4c12.5 12.5 12.5 32.8 0 45.3l-256 256c-12.5 12.5-32.8 12.5-45.3 0l-128-128c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0L160 338.7 393.4 105.4c12.5-12.5 32.8-12.5 45.3 0z"/></svg>`;
+            const banSvg = `<svg viewBox="0 0 512 512"><path d="M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM175 175c9.4-9.4 24.6-9.4 33.9 0l47 47 47-47c9.4-9.4 24.6-9.4 33.9 0s9.4 24.6 0 33.9l-47 47 47 47c9.4 9.4 9.4 24.6 0 33.9s-24.6 9.4-33.9 0l-47-47-47 47c-9.4 9.4-24.6 9.4-33.9 0s-9.4-24.6 0-33.9l47-47-47-47c-9.4-9.4-9.4-24.6 0-33.9z"/></svg>`;
+
+            if (type === 'level') {
+                const idx = this.activeLevels.indexOf(key);
+                if (idx >= 0) {
+                    this.activeLevels.splice(idx, 1);
+                    btn.classList.remove('active');
+                    btn.innerHTML = SIEVE_CONFIG.LEVELS.find(l => l.key === key)?.label || key;
+                } else {
+                    this.activeLevels.push(key);
+                    btn.classList.add('active');
+                    btn.innerHTML = checkSvg + (SIEVE_CONFIG.LEVELS.find(l => l.key === key)?.label || key);
+                }
+                Utils.set(CONFIG.KEYS.SIEVE_LEVELS, this.activeLevels);
+            } else if (type === 'cat') {
+                const idx = this.activeCats.indexOf(key);
+                if (idx >= 0) {
+                    this.activeCats.splice(idx, 1);
+                    btn.classList.remove('active');
+                    btn.innerHTML = SIEVE_CONFIG.CATEGORIES.find(c => c.id === key)?.name || key;
+                } else {
+                    this.activeCats.push(key);
+                    btn.classList.add('active');
+                    btn.innerHTML = checkSvg + (SIEVE_CONFIG.CATEGORIES.find(c => c.id === key)?.name || key);
+                }
+                Utils.set(CONFIG.KEYS.SIEVE_CATS, this.activeCats);
+            } else if (type === 'tag') {
+                // 三态循环：中性 -> 包含 -> 排除 -> 中性
+                let state = this.tagStates[key] || STATE.NEUTRAL;
+                state = (state + 1) % 3;
+                
+                if (state === STATE.NEUTRAL) {
+                    delete this.tagStates[key];
+                    btn.classList.remove('active', 'exclude');
+                    btn.innerHTML = key;
+                } else if (state === STATE.INCLUDE) {
+                    this.tagStates[key] = state;
+                    btn.classList.add('active');
+                    btn.classList.remove('exclude');
+                    btn.innerHTML = checkSvg + key;
+                } else {
+                    this.tagStates[key] = state;
+                    btn.classList.remove('active');
+                    btn.classList.add('exclude');
+                    btn.innerHTML = banSvg + key;
+                }
+                Utils.set(CONFIG.KEYS.SIEVE_TAGS, this.tagStates);
+            }
+            
+            this.filterTopics();
+        }
+
+        // 更新所有按钮状态
+        updateAllBtns() {
+            if (!this.panel) return;
+            
+            const { LEVELS, CATEGORIES, TAGS, STATE } = SIEVE_CONFIG;
+            const checkSvg = `<svg viewBox="0 0 448 512"><path d="M438.6 105.4c12.5 12.5 12.5 32.8 0 45.3l-256 256c-12.5 12.5-32.8 12.5-45.3 0l-128-128c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0L160 338.7 393.4 105.4c12.5-12.5 32.8-12.5 45.3 0z"/></svg>`;
+            const banSvg = `<svg viewBox="0 0 512 512"><path d="M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM175 175c9.4-9.4 24.6-9.4 33.9 0l47 47 47-47c9.4-9.4 24.6-9.4 33.9 0s9.4 24.6 0 33.9l-47 47 47 47c9.4 9.4 9.4 24.6 0 33.9s-24.6 9.4-33.9 0l-47-47-47 47c-9.4 9.4-24.6 9.4-33.9 0s-9.4-24.6 0-33.9l47-47-47-47c-9.4-9.4-9.4-24.6 0-33.9z"/></svg>`;
+
+            // 更新等级按钮
+            this.panel.querySelectorAll('[data-type="level"]').forEach(btn => {
+                const key = btn.dataset.key;
+                const isActive = this.activeLevels.includes(key);
+                btn.className = 'lda-sieve-btn' + (isActive ? ' active' : '');
+                btn.innerHTML = (isActive ? checkSvg : '') + (LEVELS.find(l => l.key === key)?.label || key);
+            });
+
+            // 更新分类按钮
+            this.panel.querySelectorAll('[data-type="cat"]').forEach(btn => {
+                const key = btn.dataset.key;
+                const isActive = this.activeCats.includes(key);
+                btn.className = 'lda-sieve-btn' + (isActive ? ' active' : '');
+                btn.innerHTML = (isActive ? checkSvg : '') + (CATEGORIES.find(c => c.id === key)?.name || key);
+            });
+
+            // 更新标签按钮
+            this.panel.querySelectorAll('[data-type="tag"]').forEach(btn => {
+                const key = btn.dataset.key;
+                const state = this.tagStates[key] || STATE.NEUTRAL;
+                let cls = 'lda-sieve-btn';
+                let icon = '';
+                if (state === STATE.INCLUDE) { cls += ' active'; icon = checkSvg; }
+                else if (state === STATE.EXCLUDE) { cls += ' exclude'; icon = banSvg; }
+                btn.className = cls;
+                btn.innerHTML = icon + key;
+            });
+        }
+
+        // 保存预设
+        savePreset(name) {
+            this.presets[name] = {
+                levels: [...this.activeLevels],
+                cats: [...this.activeCats],
+                tags: { ...this.tagStates }
+            };
+            
+            // 添加到顺序列表（如果是新的）
+            if (!this.presetOrder.includes(name)) {
+                this.presetOrder.push(name);
+            }
+            
+            Utils.set(CONFIG.KEYS.SIEVE_PRESETS, this.presets);
+            Utils.set(CONFIG.KEYS.SIEVE_PRESET_ORDER, this.presetOrder);
+            
+            this.refreshPresets();
+        }
+
+        // 加载预设
+        loadPreset(name) {
+            const preset = this.presets[name];
+            if (!preset) return;
+            
+            this.activeLevels = [...(preset.levels || [])];
+            this.activeCats = [...(preset.cats || [])];
+            this.tagStates = { ...(preset.tags || {}) };
+            
+            Utils.set(CONFIG.KEYS.SIEVE_LEVELS, this.activeLevels);
+            Utils.set(CONFIG.KEYS.SIEVE_CATS, this.activeCats);
+            Utils.set(CONFIG.KEYS.SIEVE_TAGS, this.tagStates);
+            
+            this.updateAllBtns();
+            this.filterTopics();
+        }
+
+        // 删除预设
+        deletePreset(name) {
+            delete this.presets[name];
+            const idx = this.presetOrder.indexOf(name);
+            if (idx >= 0) this.presetOrder.splice(idx, 1);
+            
+            Utils.set(CONFIG.KEYS.SIEVE_PRESETS, this.presets);
+            Utils.set(CONFIG.KEYS.SIEVE_PRESET_ORDER, this.presetOrder);
+            
+            this.refreshPresets();
+        }
+
+        // 筛选帖子
+        filterTopics() {
+            const rows = document.querySelectorAll('.topic-list-body tr.topic-list-item');
+            if (!rows.length) return 0;
+
+            const { LEVELS, CATEGORIES, STATE } = SIEVE_CONFIG;
+            let visibleCount = 0;
+
+            const isAllLevels = this.activeLevels.length === LEVELS.length;
+            const isAllCats = this.activeCats.length === CATEGORIES.length;
+
+            // 收集包含和排除的标签
+            const includeTags = [];
+            const excludeTags = [];
+            SIEVE_CONFIG.TAGS.forEach(tag => {
+                const s = this.tagStates[tag] || STATE.NEUTRAL;
+                if (s === STATE.INCLUDE) includeTags.push(tag);
+                if (s === STATE.EXCLUDE) excludeTags.push(tag);
+            });
+
+            rows.forEach(row => {
+                const classListRaw = row.className;
+                const classListArray = Array.from(row.classList);
+
+                // 1. 等级匹配
+                let levelMatch = isAllLevels;
+                if (!levelMatch) {
+                    for (let filter of LEVELS) {
+                        if (this.activeLevels.includes(filter.key) && filter.check(classListRaw)) {
+                            levelMatch = true;
+                            break;
+                        }
+                    }
+                }
+
+                // 2. 分类匹配
+                let categoryMatch = isAllCats;
+                if (levelMatch && !categoryMatch) {
+                    const categoryBadge = row.querySelector('.badge-category__wrapper span[data-category-id]');
+                    if (categoryBadge) {
+                        const cid = categoryBadge.getAttribute('data-category-id');
+                        const pid = categoryBadge.getAttribute('data-parent-category-id');
+                        if (this.activeCats.includes(cid) || (pid && this.activeCats.includes(pid))) {
+                            categoryMatch = true;
+                        }
+                    } else {
+                        categoryMatch = true;
+                    }
+                }
+
+                // 3. 标签匹配
+                let tagMatch = true;
+                if (levelMatch && categoryMatch) {
+                    const rowTags = classListArray
+                        .filter(cls => cls.startsWith('tag-'))
+                        .map(cls => {
+                            let rawTag = cls.substring(4);
+                            try { return decodeURIComponent(rawTag); } catch (e) { return rawTag; }
+                        });
+
+                    const hasNoTags = rowTags.length === 0;
+
+                    if (excludeTags.length > 0) {
+                        if (hasNoTags) {
+                            if (excludeTags.includes("无标签")) tagMatch = false;
+                        } else {
+                            if (rowTags.some(t => excludeTags.includes(t))) tagMatch = false;
+                        }
+                    }
+
+                    if (tagMatch && includeTags.length > 0) {
+                        let hit = false;
+                        if (hasNoTags) {
+                            if (includeTags.includes("无标签")) hit = true;
+                        } else {
+                            if (rowTags.some(t => includeTags.includes(t))) hit = true;
+                        }
+                        if (!hit) tagMatch = false;
+                    }
+                }
+
+                if (levelMatch && categoryMatch && tagMatch) {
+                    row.style.display = '';
+                    visibleCount++;
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+
+            return visibleCount;
+        }
+
+        // 启动筛选循环
+        startFilterLoop() {
+            if (this.checkInterval) clearInterval(this.checkInterval);
+            this.checkInterval = setInterval(() => this.forceLoadLoop(), 1500);
+        }
+
+        // 强制加载循环
+        forceLoadLoop() {
+            if (this.isDestroyed) return;
+            
+            // 检查是否在首页
+            if (!this.isHomePage()) {
+                this.updateStatus('');
+                return;
+            }
+
+            const currentCount = this.filterTopics();
+            const { LEVELS, CATEGORIES, TAGS, STATE, TARGET_COUNT } = SIEVE_CONFIG;
+            
+            const isAllLevels = this.activeLevels.length === LEVELS.length;
+            const isAllCats = this.activeCats.length === CATEGORIES.length;
+            const isAllTagsNeutral = TAGS.every(t => !this.tagStates[t]);
+
+            // 如果所有筛选都是全选状态，隐藏状态
+            if (isAllLevels && isAllCats && isAllTagsNeutral) {
+                this.updateStatus('');
+                return;
+            }
+
+            if (currentCount < TARGET_COUNT) {
+                if (this.isFooterReached()) {
+                    this.updateStatus(`已到底部 (${currentCount} 条)`, 'end');
+                    return;
+                }
+
+                if (this.isLoading()) {
+                    this.updateStatus(`加载中... (${currentCount} 条)`, 'loading');
+                } else {
+                    this.updateStatus(`加载更多... (${currentCount}/${TARGET_COUNT})`, 'loading');
+                    window.scrollTo(0, document.body.scrollHeight - 150);
+                    setTimeout(() => {
+                        window.scrollTo(0, document.body.scrollHeight);
+                    }, 100);
+                }
+            } else {
+                this.updateStatus(`筛选完毕 (${currentCount} 条)`, 'done');
+            }
+        }
+
+        // 判断是否到达底部
+        isFooterReached() {
+            const footerMessage = document.querySelector('.footer-message');
+            if (footerMessage && footerMessage.offsetParent !== null) return true;
+            const bottom = document.getElementById('topic-list-bottom');
+            if (bottom && bottom.innerText.includes('没有更多')) return true;
+            return false;
+        }
+
+        // 判断是否正在加载
+        isLoading() {
+            const spinner = document.querySelector('.spinner');
+            return spinner && spinner.offsetParent !== null;
+        }
+
+        // 更新状态显示
+        updateStatus(text, type = '') {
+            if (!this.statusEl) return;
+            this.statusEl.textContent = text;
+            this.statusEl.className = 'lda-sieve-status' + (text ? ' visible' : '') + (type ? ` ${type}` : '');
+        }
+
+        // 监听 URL 变化
+        setupUrlWatcher() {
+            if (this.observer) this.observer.disconnect();
+            
+            this.observer = new MutationObserver(() => {
+                const url = location.href;
+                if (url !== this.lastUrl) {
+                    this.lastUrl = url;
+                    setTimeout(() => this.onUrlChange(), 500);
+                }
+                // 如果面板被移除，重新创建
+                if (!document.getElementById('lda-sieve-panel') && this.isHomePage()) {
+                    this.panel = null;
+                    this.createUI();
+                }
+            });
+            
+            this.observer.observe(document, { subtree: true, childList: true });
+        }
+
+        // URL 变化时重新初始化
+        onUrlChange() {
+            if (this.isDestroyed) return;
+            
+            if (this.isHomePage()) {
+                if (!this.panel) {
+                    this.createUI();
+                }
+                this.filterTopics();
+            } else {
+                // 非首页时隐藏面板
+                if (this.panel) {
+                    this.panel.style.display = 'none';
+                }
+            }
+        }
+    }
+
     // 主程序
     class App {
         constructor() {
@@ -1327,7 +2417,8 @@
                 gainAnim: Utils.get(CONFIG.KEYS.GAIN_ANIM, true), // 涨分动画，默认开启
                 useClassicIcon: Utils.get(CONFIG.KEYS.USE_CLASSIC_ICON, false), // 使用经典地球图标，默认关闭
                 iconSize: Utils.get(CONFIG.KEYS.ICON_SIZE, 'sm'), // 小秘书图标尺寸，默认小
-                displayMode: Utils.get(CONFIG.KEYS.DISPLAY_MODE, 'float') // 显示模式：float（悬浮球）/ header（顶栏按钮）
+                displayMode: Utils.get(CONFIG.KEYS.DISPLAY_MODE, 'float'), // 显示模式：float（悬浮球）/ header（顶栏按钮）
+                sieveEnabled: Utils.get(CONFIG.KEYS.SIEVE_ENABLED, true) // 主页筛选工具开关，默认开启
             };
             this.iconCache = Utils.get(CONFIG.KEYS.ICON_CACHE, null); // 小秘书图标缓存
             this.cdkCache = Utils.get(CONFIG.KEYS.CACHE_CDK, null);
@@ -1355,6 +2446,7 @@
             this.refreshStartTime = { trust: 0, credit: 0, cdk: 0 };
             this.refreshStopPending = { trust: false, credit: false, cdk: false }; // 是否正在等待延迟停止
             this.dom = {};
+            this.sieveModule = null; // 筛选工具模块实例
 
             // 存储/缓存格式校验（避免旧版本残留导致错误状态）
             this.ensureStorageSchema();
@@ -1387,6 +2479,9 @@
             this.prewarmAll();
             this.startAutoRefreshTimer();
             this.maybeAutoCheckUpdate();
+            
+            // 初始化筛选工具（如果启用且在首页）
+            this.initSieveIfNeeded();
 
             if (this.state.expand || forceOpen) {
                 this.togglePanel(true);
@@ -1521,7 +2616,7 @@
         }
 
         renderSettings() {
-            const { lang, height, expand, tabOrder, refreshInterval, opacity, gainAnim, useClassicIcon, iconSize, displayMode } = this.state;
+            const { lang, height, expand, tabOrder, refreshInterval, opacity, gainAnim, useClassicIcon, iconSize, displayMode, sieveEnabled } = this.state;
             const r = (val, cur) => val === cur ? 'active' : '';
             const opacityVal = Math.max(0.5, Math.min(1, Number(opacity) || 1));
             const opacityPercent = Math.round(opacityVal * 100);
@@ -1578,6 +2673,11 @@
                         <div style="display:flex;align-items:center;gap:8px;">
                             <label class="lda-switch"><input type="checkbox" id="inp-header-mode" ${displayMode === 'header' ? 'checked' : ''}><span class="lda-slider"></span></label>
                             <div class="lda-opt-label" style="font-size:12px">${displayMode === 'header' ? this.t('set_show_float_icon') : this.t('set_show_header_btn')}</div>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <label class="lda-switch"><input type="checkbox" id="inp-sieve-enabled" ${sieveEnabled ? 'checked' : ''}><span class="lda-slider"></span></label>
+                            <div class="lda-opt-label" style="font-size:12px">${this.t('set_sieve')}</div>
+                            <span style="font-size:10px;color:var(--lda-dim);opacity:0.7;">${this.t('sieve_tip')}</span>
                         </div>
                     </div>
                     <div class="lda-opt" id="lda-icon-size-opt" style="${useClassicIcon ? 'display:none;' : ''}">
@@ -1917,6 +3017,17 @@
                     // 如果切换到小秘书模式且没有缓存，重新加载图标
                     if (!e.target.checked && !this.iconCache) {
                         this.loadSecretaryIcons().then(() => this.updateBallIcon());
+                    }
+                }
+                // 筛选工具开关
+                if (e.target.id === 'inp-sieve-enabled') {
+                    this.state.sieveEnabled = e.target.checked;
+                    Utils.set(CONFIG.KEYS.SIEVE_ENABLED, e.target.checked);
+                    // 切换筛选功能
+                    if (e.target.checked) {
+                        this.initSieveIfNeeded();
+                    } else {
+                        this.destroySieve();
                     }
                 }
                 const iconSizeNode = e.target.closest('#grp-icon-size .lda-seg-item');
@@ -2323,6 +3434,37 @@
             const ONE_HOUR = 60 * 60 * 1000;
             if (now - (this.lastSkipUpdate || 0) < ONE_HOUR) return;
             this.checkUpdate({ isAuto: true });
+        }
+
+        // 初始化筛选工具（如果启用且在 linux.do 首页）
+        initSieveIfNeeded() {
+            // 检查是否启用
+            if (!this.state.sieveEnabled) return;
+            
+            // 检查是否在 linux.do 域名
+            if (window.location.hostname !== 'linux.do') return;
+            
+            // 检查是否在首页相关路径
+            const homePaths = ['/', '/latest', '/top', '/new'];
+            if (!homePaths.includes(window.location.pathname)) return;
+            
+            // 如果已存在实例，直接初始化
+            if (this.sieveModule) {
+                this.sieveModule.init();
+                return;
+            }
+            
+            // 创建新实例
+            this.sieveModule = new SieveModule(this);
+            this.sieveModule.init();
+        }
+
+        // 销毁筛选工具
+        destroySieve() {
+            if (this.sieveModule) {
+                this.sieveModule.destroy();
+                this.sieveModule = null;
+            }
         }
 
         // ✅ 新：通用友好状态卡片（用于网络错误/环境问题等）
