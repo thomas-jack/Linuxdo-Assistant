@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      5.9.0
+// @version      5.10.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 主页筛选工具 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -23,12 +23,16 @@
 // ==/UserScript==
 
 /**
- * 更新日志 v5.8.0
- * - 优化：设置页拆分为"功能"和"外观"双标签页，减少页面长度
- * - 新增：字体大小调节滑块（70%-130%），支持一键恢复默认
- * - 优化：支持小秘书区域始终可见，不再被大量设置项挤到底部
+ * 更新日志 v5.10.0
+ * - 修复：增加 429 Too Many Requests 处理和指数退避重试机制，避免请求过于频繁
+ * - 修复：防止在 iframe 中运行主逻辑，避免多实例化导致并发请求
+ * - 修复：防止 window/document 级事件监听器重复绑定
+ * - 修复：增加 tick 防抖机制和全局请求冷却，避免循环刷新
+ * - 修复：不再自动设置 focusFlags，仅在用户点击跳转链接时设置
+ * - 调整：主页筛选工具默认关闭
  *
  * 历史更新：
+ * v5.8.0 - 优化：设置页拆分为"功能"和"外观"双标签页 + 字体大小调节
  * v5.7.0 - 新增：主页筛选工具 - 按等级/分类/标签筛选帖子，支持预设保存和拖拽排序
  * v5.6.0 - 优化：设置页"支持作者"改为"支持小秘书"，文案改为随机语录
  * v5.5.0 - 修复 Firefox 数据获取 + 顶栏按钮模式 + 注册天数显示
@@ -74,7 +78,7 @@
                 time_read: { name: '阅读时间', target: 3600, unit: 'seconds' } // 60分钟
             }
         },
-        CACHE_SCHEMA_VERSION: 3, // 递增以触发 sieveEnabled 重置为 false
+        CACHE_SCHEMA_VERSION: 2,
         // 保持 v4 键名以维持配置
         KEYS: {
             POS: 'lda_v4_pos',
@@ -267,8 +271,6 @@
             sieve_status_filtering: "筛选中...",
             sieve_status_done: "筛选完毕",
             sieve_status_end: "已到底部",
-            sieve_status_no_filter: "无筛选条件",
-            sieve_status_no_more: "暂无更多内容",
             sieve_no_preset: "暂无预设",
             sieve_tip: "仅在首页生效",
             // 设置页分类
@@ -413,8 +415,6 @@
             sieve_status_filtering: "Filtering...",
             sieve_status_done: "Done",
             sieve_status_end: "End of list",
-            sieve_status_no_filter: "No filter selected",
-            sieve_status_no_more: "No more content",
             sieve_no_preset: "No presets",
             sieve_tip: "Homepage only",
             // Settings sub-tabs
@@ -771,6 +771,11 @@
 
     if (isCDKPage) {
         initCDKBridgePage();
+        return;
+    }
+
+    // 防止在 iframe 中运行主逻辑，避免多实例化导致并发请求
+    if (window.self !== window.top) {
         return;
     }
 
@@ -2154,8 +2159,6 @@
             }
             
             this.updateAllBtns();
-            this._stagnantCount = 0;  // 重置停滞计数
-            this._lastTotalRows = 0;
             this.filterTopics();
         }
 
@@ -2213,8 +2216,6 @@
                 Utils.set(CONFIG.KEYS.SIEVE_TAGS, this.tagStates);
             }
             
-            this._stagnantCount = 0;  // 重置停滞计数
-            this._lastTotalRows = 0;
             this.filterTopics();
         }
 
@@ -2288,8 +2289,6 @@
             Utils.set(CONFIG.KEYS.SIEVE_TAGS, this.tagStates);
             
             this.updateAllBtns();
-            this._stagnantCount = 0;  // 重置停滞计数
-            this._lastTotalRows = 0;
             this.filterTopics();
         }
 
@@ -2413,47 +2412,20 @@
                 return;
             }
 
+            const currentCount = this.filterTopics();
             const { LEVELS, CATEGORIES, TAGS, STATE, TARGET_COUNT } = SIEVE_CONFIG;
             
             const isAllLevels = this.activeLevels.length === LEVELS.length;
             const isAllCats = this.activeCats.length === CATEGORIES.length;
             const isAllTagsNeutral = TAGS.every(t => !this.tagStates[t]);
 
-            // 如果所有筛选都是全选状态，隐藏状态（不需要筛选）
+            // 如果所有筛选都是全选状态，隐藏状态
             if (isAllLevels && isAllCats && isAllTagsNeutral) {
                 this.updateStatus('');
-                this._stagnantCount = 0;
                 return;
             }
-            
-            // 如果等级或分类为空选择，意味着没有任何内容可显示，直接停止
-            const isNoLevels = this.activeLevels.length === 0;
-            const isNoCats = this.activeCats.length === 0;
-            if (isNoLevels || isNoCats) {
-                this.filterTopics();  // 执行筛选（隐藏所有帖子）
-                this.updateStatus('无筛选条件', 'end');
-                this._stagnantCount = 0;
-                return;
-            }
-
-            // 获取当前总帖子数（包括隐藏的），用于停滞检测
-            const totalRows = document.querySelectorAll('.topic-list-body tr.topic-list-item').length;
-            if (this._lastTotalRows === totalRows) {
-                this._stagnantCount = (this._stagnantCount || 0) + 1;
-            } else {
-                this._lastTotalRows = totalRows;
-                this._stagnantCount = 0;
-            }
-
-            const currentCount = this.filterTopics();
 
             if (currentCount < TARGET_COUNT) {
-                // 连续 3 次（约 4.5 秒）加载后帖子总数不变，认为已无更多内容
-                if (this._stagnantCount >= 3) {
-                    this.updateStatus(`暂无更多内容 (${currentCount} 条)`, 'end');
-                    return;
-                }
-                
                 if (this.isFooterReached()) {
                     this.updateStatus(`已到底部 (${currentCount} 条)`, 'end');
                     return;
@@ -2470,7 +2442,6 @@
                 }
             } else {
                 this.updateStatus(`筛选完毕 (${currentCount} 条)`, 'done');
-                this._stagnantCount = 0;
             }
         }
 
@@ -2506,18 +2477,10 @@
                     this.lastUrl = url;
                     setTimeout(() => this.onUrlChange(), 500);
                 }
-                // 如果面板被移除，重新创建（添加防抖动，避免频繁重建）
+                // 如果面板被移除，重新创建
                 if (!document.getElementById('lda-sieve-panel') && this.isHomePage()) {
-                    if (!this._panelRecreateTimer) {
-                        this._panelRecreateTimer = setTimeout(() => {
-                            this._panelRecreateTimer = null;
-                            // 再次确认面板确实不存在
-                            if (!document.getElementById('lda-sieve-panel') && this.isHomePage() && !this.isDestroyed) {
-                                this.panel = null;
-                                this.createUI();
-                            }
-                        }, 500);
-                    }
+                    this.panel = null;
+                    this.createUI();
                 }
             });
             
@@ -2581,7 +2544,6 @@
             this.focusFlags = { trust: false, credit: false, cdk: false };
             this.autoRefreshTimer = null;
             this.userWatchTimer = null; // 账号切换/退出检测计时器
-            this._globalEventsBound = false; // 防止事件监听器重复绑定
             this.cdkBridgeInit = false;
             this.cdkBridgeFrame = null;
             this.cdkWaiters = [];
@@ -2600,7 +2562,7 @@
             this.dom = {};
             this.sieveModule = null; // 筛选工具模块实例
             this._tickDebounceTimer = null; // tick 防抖计时器
-            this._lastFocusRefresh = 0; // 上次 focus 刷新时间
+            this._globalEventsBound = false; // 防止事件监听器重复绑定
 
             // 存储/缓存格式校验（避免旧版本残留导致错误状态）
             this.ensureStorageSchema();
@@ -3211,7 +3173,7 @@
                 document.addEventListener('click', (e) => {
                     // 检查 dom.root 是否仍在文档中
                     if (this.dom.root && document.contains(this.dom.root) &&
-                        !this.dom.root.contains(e.target) && this.dom.panel?.style.display === 'flex') {
+                        !this.dom.root.contains(e.target) && this.dom.panel.style.display === 'flex') {
                         this.togglePanel(false);
                     }
                 });
@@ -3473,7 +3435,7 @@
         ensureStorageSchema() {
             const ver = Utils.get(CONFIG.KEYS.CACHE_SCHEMA, 0);
             if (ver !== CONFIG.CACHE_SCHEMA_VERSION) {
-                // 缓存结构变更/旧版本残留：仅清空"数据缓存"，保留用户设置（主题、位置等）
+                // 缓存结构变更/旧版本残留：仅清空“数据缓存”，保留用户设置（主题、位置等）
                 this.trustData = null;
                 this.creditData = null;
                 this.cdkCache = null;
@@ -3484,9 +3446,6 @@
                 Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
                 Utils.set(CONFIG.KEYS.CACHE_CDK, null);
                 Utils.set(CONFIG.KEYS.CACHE_META, this.lastFetch);
-                // 重置筛选工具为默认关闭状态
-                this.state.sieveEnabled = false;
-                Utils.set(CONFIG.KEYS.SIEVE_ENABLED, false);
                 Utils.set(CONFIG.KEYS.CACHE_SCHEMA, CONFIG.CACHE_SCHEMA_VERSION);
             }
         }
@@ -4179,7 +4138,7 @@
                     }
                 }
 
-                // ✅ 未能拿到用户名：更谨慎的登录判断（session 不可用时，使用 DOM 是否存在"登录/注册"入口作为辅助）
+                // ✅ 未能拿到用户名：更谨慎的登录判断（session 不可用时，使用 DOM 是否存在“登录/注册”入口作为辅助）
                 if (!username) {
                     const domState = Utils.getLoginStateByDOM();
                     if (domState === false) {
@@ -4205,7 +4164,7 @@
             </div>
           </div>`;
                         const btn = Utils.el('#btn-go-login', wrap);
-                        if (btn) btn.onclick = () => location.href = '/login';
+                        if (btn) btn.onclick = () => { this.focusFlags.trust = true; location.href = '/login'; };
                         const retry = Utils.el('#btn-retry-trust', wrap);
                         if (retry) retry.onclick = (e) => {
                             e.stopPropagation();
