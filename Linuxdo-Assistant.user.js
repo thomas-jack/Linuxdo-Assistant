@@ -1689,10 +1689,7 @@
         init() {
             if (this.isDestroyed) return;
             
-            // 只在首页相关路径工作
-            if (!this.isHomePage()) return;
-            
-            // 注入样式
+            // 注入样式（无论是否在首页，样式只注入一次）
             if (!document.getElementById('lda-sieve-styles')) {
                 const style = document.createElement('style');
                 style.id = 'lda-sieve-styles';
@@ -1700,14 +1697,17 @@
                 document.head.appendChild(style);
             }
             
+            // 监听 URL 变化（无论是否在首页，这样从非首页跳转到首页时能正确响应）
+            this.setupUrlWatcher();
+            
+            // 只在首页相关路径创建 UI 和启动筛选循环
+            if (!this.isHomePage()) return;
+            
             // 创建 UI
             this.createUI();
             
             // 启动筛选循环
             this.startFilterLoop();
-            
-            // 监听 URL 变化
-            this.setupUrlWatcher();
         }
 
         // 销毁
@@ -2389,8 +2389,16 @@
             if (this.isDestroyed) return;
             
             if (this.isHomePage()) {
+                // 创建 UI（如果还没有的话）
                 if (!this.panel) {
                     this.createUI();
+                } else {
+                    // 如果面板存在但被隐藏，显示它
+                    this.panel.style.display = '';
+                }
+                // 确保筛选循环在运行（从非首页跳转到首页时可能没有启动）
+                if (!this.checkInterval) {
+                    this.startFilterLoop();
                 }
                 this.filterTopics();
             } else {
@@ -3436,7 +3444,7 @@
             this.checkUpdate({ isAuto: true });
         }
 
-        // 初始化筛选工具（如果启用且在 linux.do 首页）
+        // 初始化筛选工具（如果启用且在 linux.do 域名）
         initSieveIfNeeded() {
             // 检查是否启用
             if (!this.state.sieveEnabled) return;
@@ -3444,9 +3452,9 @@
             // 检查是否在 linux.do 域名
             if (window.location.hostname !== 'linux.do') return;
             
-            // 检查是否在首页相关路径
-            const homePaths = ['/', '/latest', '/top', '/new'];
-            if (!homePaths.includes(window.location.pathname)) return;
+            // 不再检查路径，在 linux.do 域名下始终初始化
+            // 路径检查在 SieveModule.init() 中进行，这样可以监听 URL 变化
+            // 当用户从非首页跳转到首页时，能正确显示筛选工具
             
             // 如果已存在实例，直接初始化
             if (this.sieveModule) {
