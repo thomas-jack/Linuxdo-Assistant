@@ -594,13 +594,23 @@
             return Math.ceil((oldest + windowMs - now) / 1000);
         }
 
+        // 检查多个分组的频率限制，返回第一个超限的分组名和等待时间
+        static checkMultiGroupRateLimit(groups) {
+            for (const group of groups) {
+                if (Utils.isRequestLimitExceeded(group)) {
+                    return { limited: true, group, waitTime: Utils.getRequestWaitTime(group) };
+                }
+            }
+            return { limited: false };
+        }
+
         static async request(url, options = {}) {
             // 【最高优先级】请求频率硬限制检查（根据 URL 判断分组）
             const group = Utils.getRateLimitGroup(url);
             if (group && Utils.isRequestLimitExceeded(group)) {
                 const waitTime = Utils.getRequestWaitTime(group);
                 console.warn(`[LDA] ${group} 请求频率超限，请 ${waitTime}s 后再试`);
-                Utils.showGlobalToast(`请求频率过高，请 ${waitTime}s 后再试`, 'warning', 3000);
+                // Toast 由上层 refresh 函数统一显示，避免重复
                 const err = new Error(`请求频率超限，请 ${waitTime}s 后再试`);
                 err.rateLimitExceeded = true;
                 err.waitTime = waitTime;
@@ -716,7 +726,7 @@
             if (Utils.isRequestLimitExceeded('session')) {
                 const waitTime = Utils.getRequestWaitTime('session');
                 console.warn(`[LDA] session 请求频率超限，请 ${waitTime}s 后再试`);
-                Utils.showGlobalToast(`请求频率过高，请 ${waitTime}s 后再试`, 'warning', 3000);
+                // Toast 由上层 refresh 函数统一显示，避免重复
                 return null;
             }
             // session 分组限流检查：冷却期内返回 null（安全，不抛错）
@@ -875,7 +885,7 @@
             if (Utils.isRequestLimitExceeded('user')) {
                 const waitTime = Utils.getRequestWaitTime('user');
                 console.warn(`[LDA] user 请求频率超限，请 ${waitTime}s 后再试`);
-                Utils.showGlobalToast(`请求频率过高，请 ${waitTime}s 后再试`, 'warning', 3000);
+                // Toast 由上层 refresh 函数统一显示，避免重复
                 return null;
             }
             // user 分组限流检查
@@ -905,7 +915,7 @@
             if (Utils.isRequestLimitExceeded('user')) {
                 const waitTime = Utils.getRequestWaitTime('user');
                 console.warn(`[LDA] user 请求频率超限，请 ${waitTime}s 后再试`);
-                Utils.showGlobalToast(`请求频率过高，请 ${waitTime}s 后再试`, 'warning', 3000);
+                // Toast 由上层 refresh 函数统一显示，避免重复
                 return null;
             }
             // user 分组限流检查（与 fetchUserInfo 共享）
@@ -945,7 +955,7 @@
             if (Utils.isRequestLimitExceeded('leaderboard')) {
                 const waitTime = Utils.getRequestWaitTime('leaderboard');
                 console.warn(`[LDA] leaderboard 请求频率超限，请 ${waitTime}s 后再试`);
-                Utils.showGlobalToast(`请求频率过高，请 ${waitTime}s 后再试`, 'warning', 3000);
+                // Toast 由上层 refresh 函数统一显示，避免重复
                 return { dailyRank: null, score: null };
             }
             // 60 秒独立冷却：排行榜数据更新频率低，限制请求频率
@@ -4772,6 +4782,16 @@
             const wrap = this.dom.trust;
             const endWait = this.beginWait('trust');
 
+            // 【频率限制预检查】如果核心分组超限且有缓存，直接使用缓存
+            // 注：leaderboard 不参与预检查，因为它有独立的 60 秒冷却且不影响核心数据显示
+            const rateCheck = Utils.checkMultiGroupRateLimit(['session', 'user', 'connect']);
+            if (rateCheck.limited && this.trustData) {
+                this.renderTrust(this.trustData);
+                this.showToast(`${this.t('rate_limit_exceeded')}（${rateCheck.waitTime}s）`, 'warning', 3000);
+                endWait();
+                return;
+            }
+
             // 旋转
             this.refreshingPages.trust = true;
             this.refreshStartTime.trust = Date.now();
@@ -4976,9 +4996,15 @@
                     memberDays = Math.floor((now - createdDate) / (1000 * 60 * 60 * 24));
                 }
                 // 只有开启"显示每日排名"时才显示排名和积分（它们都来自 Leaderboard）
+                // 如果 forumStats 获取失败（如频率限制），保留缓存中的旧数据
+                const oldStats = this.trustData?.stats;
                 const statsData = {
-                    dailyRank: this.state.showDailyRank ? (forumStats?.dailyRank || null) : null,
-                    score: this.state.showDailyRank ? (forumStats?.score || null) : null,
+                    dailyRank: this.state.showDailyRank 
+                        ? (forumStats?.dailyRank ?? oldStats?.dailyRank ?? null) 
+                        : null,
+                    score: this.state.showDailyRank 
+                        ? (forumStats?.score ?? oldStats?.score ?? null) 
+                        : null,
                     memberDays: memberDays
                 };
 
@@ -5215,6 +5241,15 @@
             const wrap = this.dom.credit;
             const endWait = this.beginWait('credit');
 
+            // 【频率限制预检查】如果 credit 分组超限且有缓存，直接使用缓存
+            const rateCheck = Utils.checkMultiGroupRateLimit(['credit']);
+            if (rateCheck.limited && this.creditData) {
+                this.renderCredit(this.creditData);
+                this.showToast(`${this.t('rate_limit_exceeded')}（${rateCheck.waitTime}s）`, 'warning', 3000);
+                endWait();
+                return;
+            }
+
             this.refreshingPages.credit = true;
             this.refreshStartTime.credit = Date.now();
             this.setRefreshBtnLoading('credit', true);
@@ -5447,6 +5482,15 @@
 
             const wrap = this.dom.cdk;
             const endWait = this.beginWait('cdk');
+
+            // 【频率限制预检查】如果 cdk 分组超限且有缓存，直接使用缓存
+            const rateCheck = Utils.checkMultiGroupRateLimit(['cdk']);
+            if (rateCheck.limited && this.cdkCache?.data) {
+                this.renderCDKContent(this.cdkCache.data);
+                this.showToast(`${this.t('rate_limit_exceeded')}（${rateCheck.waitTime}s）`, 'warning', 3000);
+                endWait();
+                return;
+            }
 
             this.refreshingPages.cdk = true;
             this.refreshStartTime.cdk = Date.now();
