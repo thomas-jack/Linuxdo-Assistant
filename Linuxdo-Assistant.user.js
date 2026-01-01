@@ -4936,6 +4936,14 @@
                         basic = await this.fetchLowLevelTrustData(username, userTrustLevel);
                         basic.ui = 'normal';
                     } catch (_) {
+                        // 如果有缓存数据，继续显示缓存；否则显示友好错误 UI
+                        if (this.trustData?.basic) {
+                            this.renderTrust(this.trustData);
+                            this.stopRefreshWithMinDuration('trust');
+                            if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
+                            endWait();
+                            return;
+                        }
                         this.renderStateCard(wrap, 'trust', {
                             title: this.t('network_error_title'),
                             tip: this.t('network_error_tip'),
@@ -4968,7 +4976,14 @@
                                 isPass: snap.isPass
                             };
                         } catch (_) {
-                            // connect + summary 都失败 => 友好错误 UI
+                            // connect + summary 都失败：如果有缓存数据，继续显示缓存；否则显示友好错误 UI
+                            if (this.trustData?.basic) {
+                                this.renderTrust(this.trustData);
+                                this.stopRefreshWithMinDuration('trust');
+                                if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
+                                endWait();
+                                return;
+                            }
                             this.renderStateCard(wrap, 'trust', {
                                 title: this.t('network_error_title'),
                                 tip: this.t('network_error_tip'),
@@ -5016,16 +5031,21 @@
                 if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
 
             } catch (e) {
-                // 最外层兜底：当作网络/环境错误，但尽量给 connect + refresh
-                this.renderStateCard(wrap, 'trust', {
-                    title: this.t('network_error_title'),
-                    tip: this.t('network_error_tip'),
-                    levelText: '?',
-                    leftUrl: CONFIG.API.LINK_TRUST,
-                    leftText: this.t('connect_open'),
-                    onRetry: () => this.refreshTrust({ manual: true, force: true })
-                });
-                if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
+                // 最外层兜底：如果有缓存数据，继续显示缓存；否则显示友好网络/环境错误
+                if (this.trustData?.basic) {
+                    this.renderTrust(this.trustData);
+                    if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
+                } else {
+                    this.renderStateCard(wrap, 'trust', {
+                        title: this.t('network_error_title'),
+                        tip: this.t('network_error_tip'),
+                        levelText: '?',
+                        leftUrl: CONFIG.API.LINK_TRUST,
+                        leftText: this.t('connect_open'),
+                        onRetry: () => this.refreshTrust({ manual: true, force: true })
+                    });
+                    if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
+                }
             } finally {
                 this.stopRefreshWithMinDuration('trust');
                 endWait();
@@ -5373,7 +5393,17 @@
                     return;
                 }
 
-                // ✅ 其他失败：友好网络错误 UI（左Credit右刷新）
+                // ✅ 其他失败：如果有缓存数据，继续显示缓存；否则显示友好网络错误 UI
+                if (this.creditData?.info) {
+                    // 有缓存数据，继续显示缓存，只 toast 提示刷新失败
+                    this.renderCredit(this.creditData);
+                    this.stopRefreshWithMinDuration('credit');
+                    if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
+                    endWait();
+                    return;
+                }
+
+                // 无缓存时才显示友好网络错误 UI（左Credit右刷新）
                 this.renderStateCard(wrap, 'credit', {
                     title: this.t('network_error_title'),
                     tip: this.t('network_error_tip'),
@@ -5547,8 +5577,10 @@
 
             this.stopRefreshWithMinDuration('cdk');
 
-            // 如果已有缓存，就保持缓存，不覆盖为错误/未登录
-            if (this.isCDKCacheFresh()) {
+            // 如果已有缓存数据（不管是否新鲜），继续显示缓存，不覆盖为错误/未登录
+            if (this.cdkCache?.data) {
+                this.renderCDKContent(this.cdkCache.data);
+                if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
                 endWait();
                 return;
             }
