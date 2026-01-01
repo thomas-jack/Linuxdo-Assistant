@@ -271,6 +271,7 @@
 
 - [LinuxDoStatus](https://github.com/1e0n/LinuxDoStatus) - 信任级别显示脚本，提供了实现思路参考
 - [LINUX DO Credit 悬浮窗脚本](https://linux.do/t/topic/1356074) - Credit 积分悬浮窗实现参考
+- [LINUX DO Credit 积分显示和预测脚本](https://linux.do/t/topic/1365853) - Credit 积分预测方案参考
 - [L站分数与排名显示脚本](https://linux.do/t/topic/918083) - 分数与排名显示方案参考
 - [Linux.do 顶部显示脚本](https://linux.do/t/topic/1357173) - 排名/积分数据获取方案参考
 - [Linux.do 筛选工具](https://linux.do/t/topic/1285285) ([GitHub](https://github.com/chadyi/LinuxdoSieve)) - 主页筛选工具实现参考
