@@ -1135,6 +1135,9 @@
             display: flex; align-items: center; justify-content: center; color: #fff;
             transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s;
             overflow: hidden;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-touch-callout: none;
         }
         .lda-ball::after {
             content: "";
@@ -1219,6 +1222,9 @@
             transition: all 0.2s ease;
             border: none;
             white-space: nowrap;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-touch-callout: none;
         }
         .lda-header-btn:hover {
             background: var(--primary-low-mid, rgba(59, 130, 246, 0.2));
