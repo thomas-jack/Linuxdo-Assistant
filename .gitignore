@@ -33,3 +33,6 @@ yarn-error.log
 *.bak
 *.backup
 
+# 论坛帖子文档（不上传）
+FORUM_POST.md
+
